@@ -2,7 +2,7 @@
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/federico-alunni/mcp-server-salesforce/badge)](https://securityscorecards.dev/viewer/?uri=github.com/federico-alunni/mcp-server-salesforce)
 
-An MCP (Model Context Protocol) server implementation that integrates Claude with Salesforce, enabling natural language interactions with your Salesforce data and metadata. This server allows Claude to query, modify, and manage your Salesforce objects and records using everyday language.
+An MCP (Model Context Protocol) server implementation that integrates AI Agents with Salesforce, enabling natural language interactions with your Salesforce data and metadata. This server allows AI Agents to query, modify, and manage your Salesforce objects and records using everyday language.
 
 <a href="https://glama.ai/mcp/servers/kqeniawbr6">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/kqeniawbr6/badge" alt="Salesforce Server MCP server" />

@@ -67,27 +67,6 @@ MCP_LOG_LEVEL=DEBUG
 MCP_LOG_TIMESTAMPS=true
 ```
 
-### In Claude Desktop Config
-
-```json
-{
-  "mcpServers": {
-    "salesforce": {
-      "command": "npx",
-      "args": ["-y", "@federico-alunni/mcp-server-salesforce"],
-      "env": {
-        "SALESFORCE_CONNECTION_TYPE": "OAuth_2.0_Client_Credentials",
-        "SALESFORCE_CLIENT_ID": "your_client_id",
-        "SALESFORCE_CLIENT_SECRET": "your_client_secret",
-        "SALESFORCE_INSTANCE_URL": "https://your-domain.my.salesforce.com",
-        "MCP_LOG_LEVEL": "DEBUG",
-        "MCP_LOG_TIMESTAMPS": "true"
-      }
-    }
-  }
-}
-```
-
 ### In .env File (for development)
 
 ```bash
@@ -142,12 +121,6 @@ MCP_LOG_TIMESTAMPS=true
 ```
 
 ## Finding Log Files
-
-### Claude Desktop Logs
-
-- **Windows**: `%APPDATA%\Claude\logs\`
-- **macOS**: `~/Library/Logs/Claude/`
-- **Linux**: `~/.config/Claude/logs/`
 
 ### When Running Locally
 
@@ -237,8 +210,7 @@ logger.truncate(data, maxLength); // Truncate large data
 
 1. Check that `MCP_LOG_LEVEL` is set (default is INFO)
 2. Make sure you're looking at stderr output
-3. For Claude Desktop, check the log file location for your OS
-4. Verify the server is actually running
+3. Verify the server is actually running
 
 ### Too Much Log Output?
 
