@@ -1,0 +1,184 @@
+/**
+ * Logger utility for MCP Server debugging
+ * Logs to stderr to avoid interfering with HTTP transport communication
+ */
+
+export enum LogLevel {
+  ERROR = 0,
+  WARN = 1,
+  INFO = 2,
+  DEBUG = 3,
+  VERBOSE = 4
+}
+
+class Logger {
+  private level: LogLevel;
+  private enableTimestamps: boolean;
+
+  constructor() {
+    // Read log level from environment variable
+    const envLevel = process.env.MCP_LOG_LEVEL?.toUpperCase();
+    this.level = this.parseLogLevel(envLevel);
+    this.enableTimestamps = process.env.MCP_LOG_TIMESTAMPS !== 'false';
+  }
+
+  private parseLogLevel(level?: string): LogLevel {
+    switch (level) {
+      case 'ERROR':
+        return LogLevel.ERROR;
+      case 'WARN':
+        return LogLevel.WARN;
+      case 'INFO':
+        return LogLevel.INFO;
+      case 'DEBUG':
+        return LogLevel.DEBUG;
+      case 'VERBOSE':
+        return LogLevel.VERBOSE;
+      default:
+        return LogLevel.INFO; // Default to INFO
+    }
+  }
+
+  private getTimestamp(): string {
+    if (!this.enableTimestamps) return '';
+    const now = new Date();
+    return `[${now.toISOString()}] `;
+  }
+
+  private formatMessage(level: string, message: string, data?: any): string {
+    const timestamp = this.getTimestamp();
+    let formatted = `${timestamp}[${level}] ${message}`;
+    
+    if (data !== undefined) {
+      if (typeof data === 'object') {
+        try {
+          formatted += '\n' + JSON.stringify(data, null, 2);
+        } catch (e) {
+          formatted += '\n' + String(data);
+        }
+      } else {
+        formatted += ' ' + String(data);
+      }
+    }
+    
+    return formatted;
+  }
+
+  error(message: string, error?: any): void {
+    if (this.level >= LogLevel.ERROR) {
+      console.error(this.formatMessage('ERROR', message, error));
+    }
+  }
+
+  warn(message: string, data?: any): void {
+    if (this.level >= LogLevel.WARN) {
+      console.error(this.formatMessage('WARN', message, data));
+    }
+  }
+
+  info(message: string, data?: any): void {
+    if (this.level >= LogLevel.INFO) {
+      console.error(this.formatMessage('INFO', message, data));
+    }
+  }
+
+  debug(message: string, data?: any): void {
+    if (this.level >= LogLevel.DEBUG) {
+      console.error(this.formatMessage('DEBUG', message, data));
+    }
+  }
+
+  verbose(message: string, data?: any): void {
+    if (this.level >= LogLevel.VERBOSE) {
+      console.error(this.formatMessage('VERBOSE', message, data));
+    }
+  }
+
+  // Helper method to log tool calls
+  toolCall(toolName: string, args: any): void {
+    this.info(`Tool called: ${toolName}`);
+    this.debug('Tool arguments:', this.sanitizeArgs(args));
+  }
+
+  // Helper method to log tool results
+  toolResult(toolName: string, duration: number, success: boolean, recordCount?: number): void {
+    const status = success ? 'SUCCESS' : 'FAILED';
+    let message = `Tool ${toolName} completed in ${duration}ms [${status}]`;
+    if (recordCount !== undefined) {
+      message += ` - ${recordCount} records`;
+    }
+    this.info(message);
+  }
+
+  // Helper method to log Salesforce API calls
+  salesforceCall(operation: string, details?: any): void {
+    this.debug(`Salesforce API: ${operation}`, details);
+  }
+
+  // Sanitize sensitive data from arguments
+  private sanitizeArgs(args: any): any {
+    if (!args || typeof args !== 'object') return args;
+    
+    const sanitized = { ...args };
+    const sensitiveKeys = ['password', 'token', 'secret', 'apiKey', 'clientSecret'];
+    
+    for (const key of Object.keys(sanitized)) {
+      if (sensitiveKeys.some(sk => key.toLowerCase().includes(sk.toLowerCase()))) {
+        sanitized[key] = '***REDACTED***';
+      }
+    }
+    
+    return sanitized;
+  }
+
+  // Method to truncate large data for logging
+  truncate(data: any, maxLength: number = 500): string {
+    const str = typeof data === 'string' ? data : JSON.stringify(data);
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + `... (truncated ${str.length - maxLength} chars)`;
+  }
+
+  // Log user operations without exposing sensitive tokens
+  userOperation(operation: string, username?: string, userId?: string, toolName?: string): void {
+    const userInfo = username || userId || 'unknown-user';
+    const context = toolName ? ` via ${toolName}` : '';
+    this.info(`User operation: ${operation} by ${userInfo}${context}`);
+  }
+
+  // Mask access token for safe logging
+  maskToken(token: string): string {
+    if (!token || token.length < 12) return '***MASKED***';
+    return `${token.substring(0, 4)}...${token.substring(token.length - 4)}`;
+  }
+
+  // Log Salesforce API request
+  salesforceRequest(method: string, url: string, body?: any): void {
+    this.debug(`[SF API Request] ${method} ${url}`);
+    if (body && this.level >= LogLevel.VERBOSE) {
+      this.verbose('Request body:', this.truncate(JSON.stringify(body), 1000));
+    }
+  }
+
+  // Log Salesforce API response
+  salesforceResponse(method: string, url: string, statusCode: number, body?: any, duration?: number): void {
+    const durationStr = duration ? ` (${duration}ms)` : '';
+    this.debug(`[SF API Response] ${method} ${url} - ${statusCode}${durationStr}`);
+    if (body && this.level >= LogLevel.VERBOSE) {
+      this.verbose('Response body:', this.truncate(JSON.stringify(body), 1000));
+    }
+  }
+
+  // Log SOQL query
+  soqlQuery(query: string): void {
+    this.debug(`[SOQL] ${query}`);
+  }
+
+  // Log SOQL query result
+  soqlResult(query: string, recordCount: number, duration?: number): void {
+    const durationStr = duration ? ` in ${duration}ms` : '';
+    this.debug(`[SOQL Result] ${recordCount} records${durationStr}`);
+  }
+}
+
+// Export singleton instance
+export const logger = new Logger();
