@@ -83,13 +83,43 @@ export interface SalesforceOAuthContext {
 }
 
 /**
+ * OAuth 2.0 Client Credentials context supplied via request headers.
+ * Used when x-mcp-auth-mode: oauth is sent on a per-request basis.
+ */
+export interface OAuthClientCredentialsContext {
+  /**
+   * Connected App client ID (x-salesforce-client-id header)
+   */
+  clientId: string;
+
+  /**
+   * Connected App client secret (x-salesforce-client-secret header)
+   */
+  clientSecret: string;
+
+  /**
+   * Salesforce instance URL (x-salesforce-instance-url header)
+   */
+  instanceUrl: string;
+}
+
+/**
  * Request context containing optional OAuth credentials
  */
 export interface RequestContext {
   /**
-   * Optional OAuth authentication context
-   * If provided, operations will execute in this user's context
-   * If not provided, falls back to service account authentication
+   * Auth mode requested for this specific call (x-mcp-auth-mode header).
+   * Defaults to 'strict' when not provided.
+   */
+  requestAuthMode?: 'strict' | 'oauth';
+
+  /**
+   * strict mode: per-request access token supplied via HTTP headers.
    */
   salesforceAuth?: SalesforceOAuthContext;
+
+  /**
+   * oauth mode: client credentials supplied via HTTP headers.
+   */
+  oauthCredentials?: OAuthClientCredentialsContext;
 }
