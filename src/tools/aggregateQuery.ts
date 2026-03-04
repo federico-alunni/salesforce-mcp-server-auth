@@ -7,39 +7,46 @@ export const AGGREGATE_QUERY: Tool = {
 NOTE: For regular queries without GROUP BY or aggregates, use salesforce_query_records instead.
 
 This tool handles:
-1. GROUP BY queries (single/multiple fields, related objects, date functions)
-2. Aggregate functions: COUNT(), COUNT_DISTINCT(), SUM(), AVG(), MIN(), MAX()
-3. HAVING clauses for filtering grouped results
-4. Date/time grouping: CALENDAR_YEAR(), CALENDAR_MONTH(), CALENDAR_QUARTER(), FISCAL_YEAR(), FISCAL_QUARTER()
+1. Pure aggregate queries (no GROUP BY) — e.g. total COUNT across all records
+2. GROUP BY queries (single/multiple fields, related objects, date functions)
+3. Aggregate functions: COUNT(), COUNT_DISTINCT(), SUM(), AVG(), MIN(), MAX()
+4. HAVING clauses for filtering grouped results
+5. Date/time grouping: CALENDAR_YEAR(), CALENDAR_MONTH(), CALENDAR_QUARTER(), FISCAL_YEAR(), FISCAL_QUARTER()
 
 Examples:
-1. Count opportunities by stage:
+1. Count all cases (no grouping):
+   - objectName: "Case"
+   - selectFields: ["COUNT(Id) Total"]
+   - groupByFields: []
+
+2. Count opportunities by stage:
    - objectName: "Opportunity"
    - selectFields: ["StageName", "COUNT(Id) OpportunityCount"]
    - groupByFields: ["StageName"]
 
-2. Analyze cases by priority and status:
+3. Analyze cases by priority and status:
    - objectName: "Case"
    - selectFields: ["Priority", "Status", "COUNT(Id) CaseCount", "AVG(Days_Open__c) AvgDaysOpen"]
    - groupByFields: ["Priority", "Status"]
 
-3. Count contacts by account industry:
+4. Count contacts by account industry:
    - objectName: "Contact"
    - selectFields: ["Account.Industry", "COUNT(Id) ContactCount"]
    - groupByFields: ["Account.Industry"]
 
-4. Quarterly opportunity analysis:
+5. Quarterly opportunity analysis:
    - objectName: "Opportunity"
    - selectFields: ["CALENDAR_YEAR(CloseDate) Year", "CALENDAR_QUARTER(CloseDate) Quarter", "SUM(Amount) Revenue"]
    - groupByFields: ["CALENDAR_YEAR(CloseDate)", "CALENDAR_QUARTER(CloseDate)"]
 
-5. Find accounts with more than 10 opportunities:
+6. Find accounts with more than 10 opportunities:
    - objectName: "Opportunity"
    - selectFields: ["Account.Name", "COUNT(Id) OpportunityCount"]
    - groupByFields: ["Account.Name"]
    - havingClause: "COUNT(Id) > 10"
 
 Important Rules:
+- groupByFields can be empty ([]) only when ALL selectFields are aggregate functions
 - All non-aggregate fields in selectFields MUST be included in groupByFields
 - Use whereClause to filter rows BEFORE grouping
 - Use havingClause to filter AFTER grouping (for aggregate conditions)
