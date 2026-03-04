@@ -37,12 +37,12 @@ export function validateAuthConfig(): void {
 }
 
 /**
- * Get a cache key for a given access token
- * Uses first 8 chars of token for logging purposes
+ * Get a cache key for a given access token.
+ * Uses the full token as the key to avoid collisions between different tokens
+ * that share the same prefix. The cache is in-memory only and never logged.
  */
 function getCacheKey(accessToken: string): string {
-  // Use a hash-like approach - first 8 chars for identification
-  return `token_${accessToken.substring(0, 8)}`;
+  return `token_${accessToken}`;
 }
 
 /**
