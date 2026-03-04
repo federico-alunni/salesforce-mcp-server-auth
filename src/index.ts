@@ -11,7 +11,7 @@ import * as dotenv from "dotenv";
 import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
 
-import { getConnectionForRequest } from "./utils/connection.js";
+import { getConnectionForRequest, validateAuthConfig } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
 import { classifySalesforceError, formatClassifiedError } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
@@ -79,53 +79,84 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (!args) throw new Error('Arguments are required');
 
-    // Extract OAuth context from HTTP headers only
-    let oauthContext: any = undefined;
-    
-    // Check AsyncLocalStorage for HTTP headers
+    // Extract auth context from HTTP headers
+    // x-mcp-auth-mode decides which flow to use (defaults to 'strict')
+    let requestContext: RequestContext | undefined;
+
     const store = asyncLocalStorage.getStore();
     if (store?.headers) {
-      const authHeader = store.headers['x-salesforce-access-token'];
-      const instanceHeader = store.headers['x-salesforce-instance-url'];
-      const usernameHeader = store.headers['x-salesforce-username'];
-      const userIdHeader = store.headers['x-salesforce-user-id'];
+      const h = store.headers;
 
-      // Debug logging for all auth headers
+      // Helper to normalise single-value headers
+      const str = (v: string | string[] | undefined): string | undefined =>
+        v ? (Array.isArray(v) ? v[0] : v) : undefined;
+
+      const requestAuthMode = (str(h['x-mcp-auth-mode']) ?? 'strict') as 'strict' | 'oauth';
+      const instanceHeader  = str(h['x-salesforce-instance-url']);
+
       logger.debug('Auth headers received:', {
-        'x-salesforce-access-token': authHeader ? `${String(Array.isArray(authHeader) ? authHeader[0] : authHeader)}` : 'MISSING',
-        'x-salesforce-instance-url': instanceHeader ? (Array.isArray(instanceHeader) ? instanceHeader[0] : instanceHeader) : 'MISSING',
-        'x-salesforce-username': usernameHeader ? (Array.isArray(usernameHeader) ? usernameHeader[0] : usernameHeader) : 'MISSING',
-        'x-salesforce-user-id': userIdHeader ? (Array.isArray(userIdHeader) ? userIdHeader[0] : userIdHeader) : 'MISSING'
+        'x-mcp-auth-mode': requestAuthMode,
+        'x-salesforce-instance-url': instanceHeader ?? 'MISSING',
       });
-      
 
-      // Debug logging
-      logger.debug('Checking headers for auth:', {
-        hasAuthHeader: !!authHeader,
-        hasInstanceHeader: !!instanceHeader,
-        authHeaderLength: authHeader ? (Array.isArray(authHeader) ? authHeader[0].length : authHeader.length) : 0,
-        instanceUrl: instanceHeader ? (Array.isArray(instanceHeader) ? instanceHeader[0] : instanceHeader) : 'NOT_PROVIDED'
-      });
-      
-      if (authHeader && instanceHeader) {
-        oauthContext = {
-          accessToken: Array.isArray(authHeader) ? authHeader[0] : authHeader,
-          instanceUrl: Array.isArray(instanceHeader) ? instanceHeader[0] : instanceHeader,
-          username: usernameHeader ? (Array.isArray(usernameHeader) ? usernameHeader[0] : usernameHeader) : undefined,
-          userId: userIdHeader ? (Array.isArray(userIdHeader) ? userIdHeader[0] : userIdHeader) : undefined
-        };
-        logger.debug('OAuth context extracted from HTTP headers');
+      if (requestAuthMode === 'oauth') {
+        const clientId     = str(h['x-salesforce-client-id']);
+        const clientSecret = str(h['x-salesforce-client-secret']);
+
+        logger.debug('OAuth client-credentials headers:', {
+          'x-salesforce-client-id':     clientId     ? `${clientId.substring(0, 8)}...` : 'MISSING',
+          'x-salesforce-client-secret': clientSecret ? '***' : 'MISSING',
+          'x-salesforce-instance-url':  instanceHeader ?? 'MISSING',
+        });
+
+        if (clientId && clientSecret && instanceHeader) {
+          requestContext = {
+            requestAuthMode: 'oauth',
+            oauthCredentials: { clientId, clientSecret, instanceUrl: instanceHeader },
+          };
+          logger.debug('OAuth client-credentials context built from headers');
+        } else {
+          logger.warn('Missing required oauth headers', {
+            hasClientId:     !!clientId,
+            hasClientSecret: !!clientSecret,
+            hasInstanceUrl:  !!instanceHeader,
+          });
+        }
       } else {
-        logger.warn('Missing required auth headers', { hasAuthHeader: !!authHeader, hasInstanceHeader: !!instanceHeader });
+        // strict (default)
+        const authHeader     = str(h['x-salesforce-access-token']);
+        const usernameHeader = str(h['x-salesforce-username']);
+        const userIdHeader   = str(h['x-salesforce-user-id']);
+
+        logger.debug('Strict auth headers:', {
+          'x-salesforce-access-token': authHeader ? `${authHeader.substring(0, 8)}...` : 'MISSING',
+          'x-salesforce-instance-url': instanceHeader ?? 'MISSING',
+          'x-salesforce-username':     usernameHeader ?? 'MISSING',
+          'x-salesforce-user-id':      userIdHeader   ?? 'MISSING',
+        });
+
+        if (authHeader && instanceHeader) {
+          requestContext = {
+            requestAuthMode: 'strict',
+            salesforceAuth: {
+              accessToken: authHeader,
+              instanceUrl: instanceHeader,
+              username:    usernameHeader,
+              userId:      userIdHeader,
+            },
+          };
+          logger.debug('Strict OAuth context built from headers');
+        } else {
+          logger.warn('Missing required strict auth headers', {
+            hasAccessToken: !!authHeader,
+            hasInstanceUrl: !!instanceHeader,
+          });
+        }
       }
     } else {
       logger.warn('No AsyncLocalStorage store or headers found');
     }
-    
-    const requestContext: RequestContext | undefined = oauthContext
-      ? { salesforceAuth: oauthContext }
-      : undefined;
-    
+
     // Log user context if available
     if (requestContext?.salesforceAuth) {
       const { username, userId } = requestContext.salesforceAuth;
@@ -492,6 +523,9 @@ async function runServer() {
   const transportType = getTransportType();
   const port = parseInt(process.env.MCP_SERVER_PORT || '3000');
   
+  // Fail fast if the auth configuration is invalid
+  validateAuthConfig();
+
   logger.info(`Starting Salesforce MCP Server with ${transportType} transport...`);
   logger.debug('Configuration:', {
     transport: transportType,
@@ -521,10 +555,19 @@ async function runSSEServer(port: number) {
   
   // Health check endpoint
   app.get('/health', (req, res) => {
+    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
     res.json({
       status: 'healthy',
-      authMode: 'per-request-oauth-only',
-      requiresOAuth: true,
+      authMode: currentAuthMode,
+      authHeaders: {
+        strict: {
+          required: ['x-mcp-auth-mode (value: strict, or omit for default)', 'x-salesforce-access-token', 'x-salesforce-instance-url'],
+          optional: ['x-salesforce-username', 'x-salesforce-user-id'],
+        },
+        oauth: {
+          required: ['x-mcp-auth-mode (value: oauth)', 'x-salesforce-client-id', 'x-salesforce-client-secret', 'x-salesforce-instance-url'],
+        },
+      },
       toolsAvailable: 15,
       transport: 'sse',
       cacheEnabled: true,
@@ -603,16 +646,19 @@ async function runStreamableHTTPServer(port: number) {
   // Health check endpoint
   app.get('/health', (req, res) => {
     logger.verbose('Health check requested');
+    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
     res.json({
       status: 'healthy',
-      authMode: 'per-request-oauth-headers',
-      requiresOAuth: true,
-      authHeaders: [
-        'x-salesforce-access-token',
-        'x-salesforce-instance-url',
-        'x-salesforce-username',
-        'x-salesforce-user-id'
-      ],
+      authMode: currentAuthMode,
+      authHeaders: {
+        strict: {
+          required: ['x-mcp-auth-mode (value: strict, or omit for default)', 'x-salesforce-access-token', 'x-salesforce-instance-url'],
+          optional: ['x-salesforce-username', 'x-salesforce-user-id'],
+        },
+        oauth: {
+          required: ['x-mcp-auth-mode (value: oauth)', 'x-salesforce-client-id', 'x-salesforce-client-secret', 'x-salesforce-instance-url'],
+        },
+      },
       toolsAvailable: 15,
       transport: 'streamable-http',
       cacheEnabled: true,
