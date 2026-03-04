@@ -18,6 +18,37 @@ interface CachedConnection {
 const connectionCache = new Map<string, CachedConnection>();
 const CONNECTION_CACHE_TTL = parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000'); // 5 minutes default
 
+// Fixed cache key for the shared OAuth client-credentials connection
+const OAUTH_SHARED_CACHE_KEY = 'oauth_shared';
+
+/**
+ * Validates that the required environment variables are present for the
+ * configured MCP_AUTH_MODE.  Throws on misconfiguration so the server
+ * fails fast at startup rather than on the first request.
+ */
+export function validateAuthConfig(): void {
+  const authMode = process.env.MCP_AUTH_MODE || 'strict';
+
+  if (authMode === 'oauth') {
+    const missing: string[] = [];
+    if (!process.env.OAUTH_CLIENT_ID)     missing.push('OAUTH_CLIENT_ID');
+    if (!process.env.OAUTH_CLIENT_SECRET) missing.push('OAUTH_CLIENT_SECRET');
+    if (!process.env.SALESFORCE_INSTANCE_URL) missing.push('SALESFORCE_INSTANCE_URL');
+    if (missing.length > 0) {
+      throw new Error(
+        `MCP_AUTH_MODE=oauth requires the following environment variables: ${missing.join(', ')}`
+      );
+    }
+    logger.info('Auth mode: oauth (client credentials). Shared connection will be created on first request.');
+  } else if (authMode === 'strict') {
+    logger.info('Auth mode: strict. Per-request OAuth headers required.');
+  } else {
+    throw new Error(
+      `Invalid MCP_AUTH_MODE value "${authMode}". Supported values: strict, oauth`
+    );
+  }
+}
+
 /**
  * Get a cache key for a given access token
  * Uses first 8 chars of token for logging purposes
@@ -41,17 +72,107 @@ function cleanExpiredConnections(): void {
 }
 
 /**
- * Get or create a Salesforce connection based on request context
- * Requires OAuth context with per-request authentication
- * No service account fallback - all requests must include OAuth credentials
+ * Creates a Salesforce connection using the OAuth 2.0 Client Credentials flow.
+ * Reads OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and SALESFORCE_INSTANCE_URL from env.
+ */
+async function createOAuthClientCredentialsConnection(): Promise<any> {
+  const clientId = process.env.OAUTH_CLIENT_ID!;
+  const clientSecret = process.env.OAUTH_CLIENT_SECRET!;
+  const instanceUrl = process.env.SALESFORCE_INSTANCE_URL!;
+
+  logger.salesforceCall('OAuth 2.0 Client Credentials (MCP_AUTH_MODE=oauth)', { instanceUrl });
+
+  const tokenUrl = new URL('/services/oauth2/token', instanceUrl);
+  const requestBody = querystring.stringify({
+    grant_type: 'client_credentials',
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+
+  const tokenResponse = await new Promise<any>((resolve, reject) => {
+    const req = https.request(
+      {
+        method: 'POST',
+        hostname: tokenUrl.hostname,
+        path: tokenUrl.pathname,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Length': Buffer.byteLength(requestBody),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(data);
+            if (res.statusCode !== 200) {
+              reject(new Error(
+                `OAuth token request failed (HTTP ${res.statusCode}): ` +
+                `${parsed.error} - ${parsed.error_description}`
+              ));
+            } else {
+              resolve(parsed);
+            }
+          } catch (e: unknown) {
+            reject(new Error(`Failed to parse OAuth token response: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        });
+      }
+    );
+
+    req.on('error', (e) => reject(new Error(`OAuth request error: ${e.message}`)));
+    req.write(requestBody);
+    req.end();
+  });
+
+  logger.debug('OAuth client-credentials token received successfully');
+
+  const conn = new jsforce.Connection({
+    instanceUrl: tokenResponse.instance_url,
+    accessToken: tokenResponse.access_token,
+  });
+
+  setupConnectionLogging(conn);
+  return conn;
+}
+
+/**
+ * Get or create a Salesforce connection based on the configured MCP_AUTH_MODE.
+ *
+ * - strict (default): per-request OAuth credentials supplied via HTTP headers are required.
+ * - oauth: a shared connection is established with the Salesforce org using the
+ *   OAuth 2.0 Client Credentials flow (OAUTH_CLIENT_ID / OAUTH_CLIENT_SECRET).
+ *   Per-request headers are ignored in this mode.
  */
 export async function getConnectionForRequest(context?: RequestContext): Promise<any> {
   // Clean expired connections periodically
   cleanExpiredConnections();
-  
-  // Enforce strict OAuth-only mode
+
   const authMode = process.env.MCP_AUTH_MODE || 'strict';
-  
+
+  // ── oauth mode ────────────────────────────────────────────────────────────
+  if (authMode === 'oauth') {
+    // Return cached shared connection if still valid
+    const cached = connectionCache.get(OAUTH_SHARED_CACHE_KEY);
+    if (cached && cached.expiresAt > Date.now()) {
+      logger.debug('Using cached shared OAuth client-credentials connection');
+      return cached.connection;
+    }
+
+    // Obtain a fresh token via client credentials flow
+    const conn = await createOAuthClientCredentialsConnection();
+
+    connectionCache.set(OAUTH_SHARED_CACHE_KEY, {
+      connection: conn,
+      expiresAt: Date.now() + CONNECTION_CACHE_TTL,
+    });
+
+    logger.debug('Created and cached new shared OAuth client-credentials connection');
+    return conn;
+  }
+
+  // ── strict mode (default) ─────────────────────────────────────────────────
   if (!context?.salesforceAuth) {
     throw new Error(
       'OAuth authentication required. This MCP server requires per-request OAuth credentials via HTTP headers. ' +
@@ -59,36 +180,36 @@ export async function getConnectionForRequest(context?: RequestContext): Promise
       'x-salesforce-username (optional), and x-salesforce-user-id (optional).'
     );
   }
-  
-  // OAuth context provided, use per-user authentication
+
+  // Per-user authentication
   const { accessToken, instanceUrl, username, userId } = context.salesforceAuth;
-  
+
   // Check cache first
   const cacheKey = getCacheKey(accessToken);
   const cached = connectionCache.get(cacheKey);
-  
+
   if (cached && cached.expiresAt > Date.now()) {
     logger.debug(`Using cached connection for user: ${username || userId || 'unknown'}`);
     return cached.connection;
   }
-  
+
   // Create new connection with OAuth token
   logger.userOperation('create-connection', username, userId);
   const conn = new jsforce.Connection({
     instanceUrl,
     accessToken,
   });
-  
+
   // Add request/response logging
   setupConnectionLogging(conn);
-  
+
   // Cache the connection
   connectionCache.set(cacheKey, {
     connection: conn,
     expiresAt: Date.now() + CONNECTION_CACHE_TTL,
     username: username || userId,
   });
-  
+
   logger.debug(`Created and cached new connection for user: ${username || userId || 'unknown'}`);
   return conn;
 }

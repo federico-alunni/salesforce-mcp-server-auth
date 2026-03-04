@@ -11,7 +11,7 @@ import * as dotenv from "dotenv";
 import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
 
-import { getConnectionForRequest } from "./utils/connection.js";
+import { getConnectionForRequest, validateAuthConfig } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
 import { classifySalesforceError, formatClassifiedError } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
@@ -492,6 +492,9 @@ async function runServer() {
   const transportType = getTransportType();
   const port = parseInt(process.env.MCP_SERVER_PORT || '3000');
   
+  // Fail fast if the auth configuration is invalid
+  validateAuthConfig();
+
   logger.info(`Starting Salesforce MCP Server with ${transportType} transport...`);
   logger.debug('Configuration:', {
     transport: transportType,
@@ -521,10 +524,11 @@ async function runSSEServer(port: number) {
   
   // Health check endpoint
   app.get('/health', (req, res) => {
+    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
     res.json({
       status: 'healthy',
-      authMode: 'per-request-oauth-only',
-      requiresOAuth: true,
+      authMode: currentAuthMode,
+      requiresOAuth: currentAuthMode === 'strict',
       toolsAvailable: 15,
       transport: 'sse',
       cacheEnabled: true,
@@ -603,16 +607,17 @@ async function runStreamableHTTPServer(port: number) {
   // Health check endpoint
   app.get('/health', (req, res) => {
     logger.verbose('Health check requested');
+    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
     res.json({
       status: 'healthy',
-      authMode: 'per-request-oauth-headers',
-      requiresOAuth: true,
-      authHeaders: [
+      authMode: currentAuthMode,
+      requiresOAuth: currentAuthMode === 'strict',
+      authHeaders: currentAuthMode === 'strict' ? [
         'x-salesforce-access-token',
         'x-salesforce-instance-url',
         'x-salesforce-username',
         'x-salesforce-user-id'
-      ],
+      ] : [],
       toolsAvailable: 15,
       transport: 'streamable-http',
       cacheEnabled: true,
