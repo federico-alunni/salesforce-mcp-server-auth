@@ -220,7 +220,7 @@ export async function handleAggregateQuery(conn: any, args: AggregateQueryArgs) 
     // Construct SOQL query
     let soql = `SELECT ${selectFields.join(', ')} FROM ${objectName}`;
     if (whereClause) soql += ` WHERE ${whereClause}`;
-    soql += ` GROUP BY ${groupByFields.join(', ')}`;
+    if (groupByFields.length > 0) soql += ` GROUP BY ${groupByFields.join(', ')}`;
     if (havingClause) soql += ` HAVING ${havingClause}`;
     if (orderBy) soql += ` ORDER BY ${orderBy}`;
     if (limit) soql += ` LIMIT ${limit}`;
