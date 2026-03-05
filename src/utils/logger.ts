@@ -1,6 +1,5 @@
 /**
  * Logger utility for MCP Server debugging
- * Logs to stderr to avoid interfering with HTTP transport communication
  */
 
 export enum LogLevel {
@@ -72,25 +71,25 @@ class Logger {
 
   warn(message: string, data?: any): void {
     if (this.level >= LogLevel.WARN) {
-      console.error(this.formatMessage('WARN', message, data));
+      console.warn(this.formatMessage('WARN', message, data));
     }
   }
 
   info(message: string, data?: any): void {
     if (this.level >= LogLevel.INFO) {
-      console.error(this.formatMessage('INFO', message, data));
+      console.info(this.formatMessage('INFO', message, data));
     }
   }
 
   debug(message: string, data?: any): void {
     if (this.level >= LogLevel.DEBUG) {
-      console.error(this.formatMessage('DEBUG', message, data));
+      console.debug(this.formatMessage('DEBUG', message, data));
     }
   }
 
   verbose(message: string, data?: any): void {
     if (this.level >= LogLevel.VERBOSE) {
-      console.error(this.formatMessage('VERBOSE', message, data));
+      console.log(this.formatMessage('VERBOSE', message, data));
     }
   }
 
