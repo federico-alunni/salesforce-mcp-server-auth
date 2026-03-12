@@ -3,12 +3,15 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
+  CallToolRequest,
   CallToolRequestSchema,
+  isInitializeRequest,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as dotenv from "dotenv";
 import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
+import { randomUUID } from "crypto";
 
 import { getConnectionForRequest } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
@@ -36,20 +39,8 @@ dotenv.config();
 // AsyncLocalStorage for passing HTTP headers to tool handlers
 const asyncLocalStorage = new AsyncLocalStorage<{ headers?: Record<string, string | string[] | undefined> }>();
 
-const server = new Server(
-  {
-    name: "salesforce-mcp-server",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  },
-);
-
 // Tool handlers
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+const _listToolsHandler = async () => ({
   tools: [
     SEARCH_OBJECTS, 
     DESCRIBE_OBJECT, 
@@ -67,9 +58,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     EXECUTE_ANONYMOUS,
     MANAGE_DEBUG_LOGS
   ],
-}));
+});
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+const _callToolHandler = async (request: CallToolRequest) => {
   const startTime = Date.now();
   const toolName = request.params.name;
   logger.info('Incoming request payload..');
@@ -430,7 +421,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     logger.info('Tool response (error):', errorResp);
     return errorResp;
   }
-});
+};
+
+function createMCPServer(): Server {
+  const server = new Server(
+    {
+      name: "salesforce-mcp-server",
+      version: "1.0.0",
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, _listToolsHandler);
+  server.setRequestHandler(CallToolRequestSchema, _callToolHandler);
+  return server;
+}
 
 async function runServer() {
   const port = parseInt(process.env.MCP_SERVER_PORT || '3000');
@@ -478,19 +486,38 @@ async function runStreamableHTTPServer(port: number) {
       logger.verbose(`Body: ${JSON.stringify(req.body)}`);
       
       if (sessionId && transports[sessionId]) {
-        // Reuse existing transport
+        // Reuse existing transport for this session
         logger.verbose(`Reusing existing session: ${sessionId}`);
         transport = transports[sessionId];
-      } else {
-        // Create new transport (stateless mode for simplicity)
-        logger.verbose('Creating new Streamable HTTP transport (stateless mode)');
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        // New session — create a fresh Server + transport pair per the MCP spec
+        logger.verbose('Creating new Streamable HTTP transport for new session');
         transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: undefined, // Stateless mode
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            transports[newSessionId] = transport;
+            logger.debug(`New session initialized: ${newSessionId}`);
+          },
         });
-        logger.verbose('Connecting new Streamable HTTP transport');
-        await server.connect(transport);
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            delete transports[transport.sessionId];
+            logger.debug(`Session closed and removed: ${transport.sessionId}`);
+          }
+        };
+        const sessionServer = createMCPServer();
+        logger.verbose('Connecting new Streamable HTTP transport to server');
+        await sessionServer.connect(transport);
+      } else {
+        logger.warn('Rejecting non-initialize request without valid session ID');
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+          id: req.body?.id ?? null,
+        });
+        return;
       }
-      
+
       // Store headers in AsyncLocalStorage for access in tool handlers
       await asyncLocalStorage.run({ headers: req.headers }, async () => {
         logger.verbose('Handling Streamable HTTP request');
@@ -507,7 +534,7 @@ async function runStreamableHTTPServer(port: number) {
             code: -32603,
             message: 'Internal server error',
           },
-          id: null,
+          id: req.body?.id ?? null,
         });
       }
     }
