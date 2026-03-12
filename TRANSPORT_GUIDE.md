@@ -1,127 +1,98 @@
-# Salesforce MCP Server - Transport Options
+# Salesforce MCP Server - Transport Guide
 
-This server supports two HTTP-based transport methods:
+The server exclusively uses **Streamable HTTP** transport, exposed on a single
+POST /mcp endpoint. SSE transport has been removed.
 
-## 1. SSE (Server-Sent Events) Transport
-
-Legacy HTTP transport using Server-Sent Events for real-time communication.
-
-### Configuration:
+## Starting the server
 
 ```bash
-# Environment variable
-MCP_TRANSPORT_TYPE=sse
-MCP_SERVER_PORT=3000
+# Install dependencies and build
+npm install
+npm run build
 
-# Or command line
-node dist/index.js --sse
-```
-
-### Usage:
-
-```bash
-node dist/index.js --sse
-# Output: Salesforce MCP Server running on SSE port 3000
-# SSE endpoint: http://localhost:3000/sse
-# Messages endpoint: http://localhost:3000/messages
-```
-
-### Endpoints:
-
-- **SSE Connection:** `GET http://localhost:3000/sse`
-- **Send Messages:** `POST http://localhost:3000/messages?sessionId=<session_id>`
-
-## 2. Streamable HTTP Transport (Recommended)
-
-Modern HTTP transport with full MCP protocol support.
-
-### Configuration:
-
-```bash
-# Environment variable
-MCP_TRANSPORT_TYPE=streamable-http
-MCP_SERVER_PORT=3000
-
-# Or command line
-node dist/index.js --http
-# or
-node dist/index.js --streamable-http
-```
-
-### Usage:
-
-```bash
-node dist/index.js --http
-# Output: Salesforce MCP Server running on Streamable HTTP port 3000
-# Connect to: http://localhost:3000/mcp
-```
-
-### Endpoints:
-
-- **Main endpoint:** `POST http://localhost:3000/mcp`
-- **Notifications:** `GET http://localhost:3000/mcp` (with session management)
-- **Session termination:** `DELETE http://localhost:3000/mcp`
-
-## Environment Variables
-
-### Authentication (Required)
-
-```bash
-SALESFORCE_CONNECTION_TYPE=OAuth_2.0_Client_Credentials
-SALESFORCE_CLIENT_ID=your_client_id
-SALESFORCE_CLIENT_SECRET=your_client_secret
-SALESFORCE_INSTANCE_URL=https://your-domain.my.salesforce.com
-```
-
-### Transport Configuration
-
-```bash
-# Primary transport selection
-MCP_TRANSPORT_TYPE=sse|streamable-http
-
-# Server port (for HTTP transports)
-MCP_SERVER_PORT=3000
-
-# Legacy support
-MCP_SERVER_HTTP=true  # Will use streamable-http
-```
-
-## Command Line Options
-
-### Transport Selection
-
-- `--sse` - Use SSE transport
-- `--http` or `--streamable-http` - Use Streamable HTTP transport
-
-Command line arguments take precedence over environment variables.
-
-### Examples:
-
-```bash
-# Streamable HTTP (default)
+# Start (defaults to port 3000)
 node dist/index.js
-node dist/index.js --http
 
-# SSE Transport
-node dist/index.js --sse
-
-# Streamable HTTP Transport
-node dist/index.js --http
+# Custom port
+MCP_SERVER_PORT=8080 node dist/index.js
 ```
+
+## Endpoint
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | /mcp | All MCP JSON-RPC requests (tools/list, tools/call, etc.) |
+| GET  | /health | Server health check |
+
+The transport operates in **stateless mode**: a new server instance is created
+for each POST request. No session IDs or persistent connections are required.
+
+## Authentication
+
+Every POST /mcp request must include a valid Salesforce access token in the
+standard HTTP Authorization header:
+
+```
+Authorization: Bearer <salesforce_access_token>
+```
+
+The server automatically discovers the org instance URL by calling the
+Salesforce userinfo endpoint with that token - no instance URL needs to be
+configured or sent by the client.
+
+## Health check
+
+```bash
+curl http://localhost:3000/health
+```
+
+Response:
+
+```json
+{
+  "status": "healthy",
+  "transport": "streamable-http",
+  "auth": "Authorization: Bearer <salesforce_access_token>",
+  "instanceDiscovery": "https://login.salesforce.com/services/oauth2/userinfo",
+  "instanceUrlCacheTTL": 300000,
+  "toolsAvailable": 15
+}
+```
+
+## Example tool call
+
+```bash
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer 00D..." \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "salesforce_query_records",
+      "arguments": {
+        "objectName": "Account",
+        "fields": ["Name", "Industry"],
+        "limit": 5
+      }
+    }
+  }'
+```
+
+## Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| MCP_SERVER_PORT | 3000 | HTTP port |
+| SALESFORCE_LOGIN_URL | https://login.salesforce.com | Used to call the userinfo endpoint. Set to https://test.salesforce.com for sandbox orgs. |
+| MCP_CONNECTION_CACHE_TTL | 300000 | How long (ms) to cache the discovered instance URL per token |
+| MCP_LOG_LEVEL | INFO | ERROR \| WARN \| INFO \| DEBUG \| VERBOSE |
 
 ## Testing with MCP Inspector
 
-1. Start the server:
-
-   ```bash
-   node dist/index.js --http
-   ```
-
-2. In MCP Inspector web UI, connect to:
-   - **Streamable HTTP:** `http://localhost:3000/mcp`
-   - **SSE:** `http://localhost:3000/sse`
-
-## Choosing the Right Transport
-
-- **SSE**: Legacy HTTP transport, use only if Streamable HTTP isn't supported
-- **Streamable HTTP**: Modern HTTP transport, best for web applications and remote access (default)
+1. Start the server: 
+ode dist/index.js
+2. In MCP Inspector, connect to: http://localhost:3000/mcp
+3. Set the Authorization header to Bearer <your_access_token> in the
+   inspector's custom headers section before calling any tool.

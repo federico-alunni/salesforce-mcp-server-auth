@@ -2,25 +2,51 @@
 
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/federico-alunni/mcp-server-salesforce/badge)](https://securityscorecards.dev/viewer/?uri=github.com/federico-alunni/mcp-server-salesforce)
 
-An MCP (Model Context Protocol) server implementation that integrates AI Agents with Salesforce, enabling natural language interactions with your Salesforce data and metadata. This server allows AI Agents to query, modify, and manage your Salesforce objects and records using everyday language.
+An MCP (Model Context Protocol) server that connects AI agents to Salesforce,
+enabling natural-language interactions with your Salesforce data and metadata.
 
 <a href="https://glama.ai/mcp/servers/kqeniawbr6">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/kqeniawbr6/badge" alt="Salesforce Server MCP server" />
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/kqeniawbr6/badge" alt="Salesforce MCP server" />
 </a>
+
+---
+
+## How it works
+
+1. The client (e.g. LibreChat) handles the full OAuth flow and obtains a
+   Salesforce access token.
+2. On every tool call the client sends a standard MCP JSON-RPC request to
+   POST /mcp with the token in the **standard HTTP Authorization header**:
+   ```
+   Authorization: Bearer <salesforce_access_token>
+   ```
+3. The server calls the Salesforce **userinfo endpoint** with that token to
+   discover the org's instance URL automatically — no instance URL, client
+   secret, or any other credential needs to be configured.
+4. The requested Salesforce tool is executed against the discovered instance.
+
+The server is **stateless and multi-tenant**: each request is fully
+self-contained, and multiple users connected to different orgs can use the same
+server instance simultaneously.
+
+---
 
 ## Features
 
-- **Object and Field Management**: Create and modify custom objects and fields using natural language
-- **Smart Object Search**: Find Salesforce objects using partial name matches
-- **Detailed Schema Information**: Get comprehensive field and relationship details for any object
-- **Flexible Data Queries**: Query records with relationship support and complex filters
-- **Data Manipulation**: Insert, update, delete, and upsert records with ease
-- **Cross-Object Search**: Search across multiple objects using SOSL
-- **Apex Code Management**: Read, create, and update Apex classes and triggers
-- **Per-Request OAuth Authentication**: Execute operations in user context with OAuth credentials
-- **Header-Based Auth**: HTTP/SSE transports use custom headers for authentication
-- **Intuitive Error Handling**: Clear feedback with Salesforce-specific error details
-- **OAuth-Only Security**: All requests require OAuth credentials - no service account
+- **Object & field management** — create and update custom objects and fields
+- **Smart object search** — find objects by partial name or label
+- **Detailed schema information** — field types, picklists, relationships
+- **Flexible data queries** — SOQL with relationship support and complex filters
+- **Aggregate queries** — GROUP BY, HAVING, date functions
+- **Data manipulation** — insert, update, delete, upsert
+- **Cross-object search** — SOSL across multiple objects
+- **Apex management** — read, create, update Apex classes and triggers
+- **Anonymous Apex execution** — run ad-hoc Apex with debug log access
+- **Debug log management** — enable, disable, and retrieve trace logs per user
+- **Stateless & multi-tenant** — no stored credentials; one server, many orgs
+- **Automatic instance URL discovery** — no Salesforce instance URL needed at startup
+
+---
 
 ## Installation
 
@@ -28,360 +54,163 @@ An MCP (Model Context Protocol) server implementation that integrates AI Agents 
 npm install -g @federico-alunni/mcp-server-salesforce
 ```
 
-## Tools
+---
 
-### salesforce_search_objects
+## Quick start
 
-Search for standard and custom objects:
+```bash
+# 1. Copy and configure environment
+cp .env.example .env
+# Edit .env: set SALESFORCE_LOGIN_URL to test.salesforce.com for sandboxes
 
-- Search by partial name matches
-- Finds both standard and custom objects
-- Example: "Find objects related to Account" will find Account, AccountHistory, etc.
+# 2. Build
+npm run build
 
-### salesforce_describe_object
+# 3. Start
+node dist/index.js
+# Server starts on http://localhost:3000
+```
 
-Get detailed object schema information:
-
-- Field definitions and properties
-- Relationship details
-- Picklist values
-- Example: "Show me all fields in the Account object"
-
-### salesforce_query_records
-
-Query records with relationship support:
-
-- Parent-to-child relationships
-- Child-to-parent relationships
-- Complex WHERE conditions
-- Example: "Get all Accounts with their related Contacts"
-- Note: For queries with GROUP BY or aggregate functions, use salesforce_aggregate_query
-
-### salesforce_aggregate_query
-
-Execute aggregate queries with GROUP BY:
-
-- GROUP BY single or multiple fields
-- Aggregate functions: COUNT, COUNT_DISTINCT, SUM, AVG, MIN, MAX
-- HAVING clauses for filtering grouped results
-- Date/time grouping functions
-- Example: "Count opportunities by stage" or "Find accounts with more than 10 opportunities"
-
-### salesforce_dml_records
-
-Perform data operations:
-
-- Insert new records
-- Update existing records
-- Delete records
-- Upsert using external IDs
-- Example: "Update status of multiple accounts"
-
-### salesforce_manage_object
-
-Create and modify custom objects:
-
-- Create new custom objects
-- Update object properties
-- Configure sharing settings
-- Example: "Create a Customer Feedback object"
-
-### salesforce_manage_field
-
-Manage object fields:
-
-- Add new custom fields
-- Modify field properties
-- Create relationships
-- Automatically grants Field Level Security to System Administrator by default
-- Use `grantAccessTo` parameter to specify different profiles
-- Example: "Add a Rating picklist field to Account"
-
-### salesforce_manage_field_permissions
-
-Manage Field Level Security (Field Permissions):
-
-- Grant or revoke read/edit access to fields for specific profiles
-- View current field permissions
-- Bulk update permissions for multiple profiles
-- Useful for managing permissions after field creation or for existing fields
-- Example: "Grant System Administrator access to Custom_Field\_\_c on Account"
-
-### salesforce_search_all
-
-Search across multiple objects:
-
-- SOSL-based search
-- Multiple object support
-- Field snippets
-- Example: "Search for 'cloud' across Accounts and Opportunities"
-
-### salesforce_read_apex
-
-Read Apex classes:
-
-- Get full source code of specific classes
-- List classes matching name patterns
-- View class metadata (API version, status, etc.)
-- Support for wildcards (\* and ?) in name patterns
-- Example: "Show me the AccountController class" or "Find all classes matching Account*Cont*"
-
-### salesforce_write_apex
-
-Create and update Apex classes:
-
-- Create new Apex classes
-- Update existing class implementations
-- Specify API versions
-- Example: "Create a new Apex class for handling account operations"
-
-### salesforce_read_apex_trigger
-
-Read Apex triggers:
-
-- Get full source code of specific triggers
-- List triggers matching name patterns
-- View trigger metadata (API version, object, status, etc.)
-- Support for wildcards (\* and ?) in name patterns
-- Example: "Show me the AccountTrigger" or "Find all triggers for Contact object"
-
-### salesforce_write_apex_trigger
-
-Create and update Apex triggers:
-
-- Create new Apex triggers for specific objects
-- Update existing trigger implementations
-- Specify API versions and event operations
-- Example: "Create a new trigger for the Account object" or "Update the Lead trigger"
-
-### salesforce_execute_anonymous
-
-Execute anonymous Apex code:
-
-- Run Apex code without creating a permanent class
-- View debug logs and execution results
-- Useful for data operations not directly supported by other tools
-- Example: "Execute Apex code to calculate account metrics" or "Run a script to update related records"
-
-### salesforce_manage_debug_logs
-
-Manage debug logs for Salesforce users:
-
-- Enable debug logs for specific users
-- Disable active debug log configurations
-- Retrieve and view debug logs
-- Configure log levels (NONE, ERROR, WARN, INFO, DEBUG, FINE, FINER, FINEST)
-- Example: "Enable debug logs for user@example.com" or "Retrieve recent logs for an admin user"
+---
 
 ## Authentication
 
-### HTTP Header-Based Authentication
+The server accepts a single header on every MCP request:
 
-For Streamable HTTP and SSE transports, pass OAuth credentials via HTTP headers:
+| Header | Value | Required |
+|--------|-------|----------|
+| Authorization | Bearer <salesforce_access_token> | Yes |
 
-**Required Headers:**
+No instance URL, client ID, client secret, or username headers are needed.
+The token is used as-is to call the Salesforce userinfo endpoint; the
+instance URL is derived from the response automatically.
 
-- `x-salesforce-access-token`: OAuth access token
-- `x-salesforce-instance-url`: Salesforce instance URL
+### Sandbox / custom domain support
 
-**Optional Headers:**
-
-- `x-salesforce-username`: Username (for logging)
-- `x-salesforce-user-id`: User ID (for logging)
+Set SALESFORCE_LOGIN_URL in .env to point at the correct identity server:
 
 ```bash
-curl -X POST http://localhost:3000/mcp \
-  -H "Content-Type: application/json" \
-  -H "x-salesforce-access-token: 00D..." \
-  -H "x-salesforce-instance-url: https://na50.salesforce.com" \
-  -H "x-salesforce-username: user@example.com" \
-  -H "x-salesforce-user-id: 005..." \
-  -d '{
-    "jsonrpc": "2.0",
-    "method": "tools/call",
-    "params": {
-      "name": "salesforce_query_records",
-      "arguments": {
-        "objectName": "Account",
-        "fields": ["Name", "Industry"]
-      }
-    }
-  }'
+SALESFORCE_LOGIN_URL=https://test.salesforce.com   # sandbox
+SALESFORCE_LOGIN_URL=https://login.salesforce.com  # production (default)
 ```
 
-**Environment Variables:**
+---
 
-- `MCP_CONNECTION_CACHE_TTL`: Cache duration in milliseconds (default: 300000)
-- `MCP_LOG_LEVEL`: Logging level (ERROR, WARN, INFO, DEBUG, VERBOSE)
+## Tools
+
+### salesforce_search_objects
+Find standard and custom objects by partial name or label match.
+
+### salesforce_describe_object
+Get full schema for an object: fields, types, picklist values, relationships.
+
+### salesforce_query_records
+SOQL query with parent/child relationship support, WHERE, ORDER BY, LIMIT.
+> For GROUP BY and aggregate functions use salesforce_aggregate_query.
+
+### salesforce_aggregate_query
+Aggregate SOQL with GROUP BY (single or multiple fields), HAVING, and date/time
+grouping functions (COUNT, SUM, AVG, MIN, MAX, COUNT_DISTINCT).
+
+### salesforce_dml_records
+Insert, update, delete, or upsert records (upsert supports external IDs).
+
+### salesforce_manage_object
+Create or update custom objects via the Metadata API. Configure sharing model,
+activities, description, and deployment status.
+
+### salesforce_manage_field
+Create or update custom fields via the Metadata API. Automatically grants Field
+Level Security to System Administrator; use grantAccessTo for other profiles.
+
+### salesforce_manage_field_permissions
+Grant, revoke, or view read/edit FLS on a field for named profiles.
+
+### salesforce_search_all
+SOSL search across multiple objects with per-object WHERE / ORDER BY / LIMIT,
+WITH clauses, and updateable/viewable filters.
+
+### salesforce_read_apex
+Retrieve Apex class source by exact name or wildcard pattern (*, ?).
+
+### salesforce_write_apex
+Create or update Apex classes via the Tooling API.
+
+### salesforce_read_apex_trigger
+Retrieve Apex trigger source by exact name or wildcard pattern.
+
+### salesforce_write_apex_trigger
+Create or update Apex triggers via the Tooling API.
+
+### salesforce_execute_anonymous
+Execute anonymous Apex and return compile/run status plus debug logs.
+
+### salesforce_manage_debug_logs
+Enable, disable, or retrieve TraceFlag/DebugLevel entries per Salesforce user.
+
+---
 
 ## Logging
 
-Configure via environment variables:
-
 ```bash
-MCP_LOG_LEVEL=DEBUG          # ERROR, WARN, INFO, DEBUG, VERBOSE
-MCP_LOG_TIMESTAMPS=true
+MCP_LOG_LEVEL=DEBUG        # ERROR | WARN | INFO (default) | DEBUG | VERBOSE
+MCP_LOG_TIMESTAMPS=true    # ISO-8601 timestamps (default: true)
 ```
 
-**Log Levels:**
+Logs go to **stderr**. Access tokens are never logged; only their length is
+recorded at DEBUG level. See [LOGGING_GUIDE.md](LOGGING_GUIDE.md) for details.
 
-- `ERROR`: Only critical errors
-- `WARN`: Warnings and errors
-- `INFO`: General operations (default)
-- `DEBUG`: Detailed operations including Salesforce API calls and SOQL queries
-- `VERBOSE`: Full request/response bodies (up to 1000 chars)
+---
 
-Logs are written to `stderr`. Access tokens are never logged in plain text.
+## Error handling
 
-**What gets logged:**
+Tool errors are returned as valid MCP responses (not thrown), with a
+human-readable message classified by type:
 
-- `DEBUG`: All Salesforce API requests/responses with URLs and status codes
-- `DEBUG`: All SOQL queries with result counts and execution times
-- `VERBOSE`: Request and response bodies (truncated at 1000 characters)
+INVALID_SESSION · INSUFFICIENT_ACCESS · INVALID_FIELD ·
+INVALID_OPERATION · QUERY_TIMEOUT · API_LIMIT_EXCEEDED · UNKNOWN
 
-Example output with `DEBUG` level:
+---
 
-```
-[DEBUG] [SF API Request] GET /services/data/v58.0/sobjects/Account/describe
-[DEBUG] [SOQL] SELECT Id, Name FROM Account WHERE Industry = 'Technology' LIMIT 10
-[DEBUG] [SOQL Result] 10 records in 234ms
-[DEBUG] [SF API Response] GET /services/data/v58.0/sobjects/Account/describe - 200 (456ms)
-```
-
-## Error Handling
-
-Error types: `INVALID_SESSION`, `INSUFFICIENT_ACCESS`, `INVALID_FIELD`, `QUERY_TIMEOUT`, `API_LIMIT_EXCEEDED`, `INVALID_OPERATION`
-
-## Usage Examples
+## Usage examples
 
 ```
 "Find all objects related to Accounts"
-"Show me objects that handle customer service"
-"What objects are available for order management?"
-```
-
-### Getting Schema Information
-
-```
-"What fields are available in the Account object?"
-"Show me the picklist values for Case Status"
-"Describe the relationship fields in Opportunity"
-```
-
-### Querying Records
-
-```
+"What fields are on the Opportunity object?"
 "Get all Accounts created this month"
-"Show me high-priority Cases with their related Contacts"
-"Find all Opportunities over $100k"
-```
-
-### Aggregate Queries
-
-```
-"Count opportunities by stage"
-"Show me the total revenue by account"
-"Find accounts with more than 10 opportunities"
-"Calculate average deal size by sales rep and quarter"
-"Get the number of cases by priority and status"
-```
-
-### Managing Custom Objects
-
-```
-"Create a Customer Feedback object"
-"Add a Rating field to the Feedback object"
-"Update sharing settings for the Service Request object"
-```
-
-Examples with Field Level Security:
-
-```
-# Default - grants access to System Administrator automatically
-"Create a Status picklist field on Custom_Object__c"
-
-# Custom profiles - grants access to specified profiles
-"Create a Revenue currency field on Account and grant access to Sales User and Marketing User profiles"
-```
-
-### Managing Field Permissions
-
-```
-"Grant System Administrator access to Custom_Field__c on Account"
-"Give read-only access to Rating__c field for Sales User profile"
-"View which profiles have access to the Custom_Field__c"
-"Revoke field access for specific profiles"
-```
-
-### Searching Across Objects
-
-```
-"Search for 'cloud' in Accounts and Opportunities"
-"Find mentions of 'network issue' in Cases and Knowledge Articles"
-"Search for customer name across all relevant objects"
-```
-
-### Managing Apex Code
-
-```
-"Show me all Apex classes with 'Controller' in the name"
-"Get the full code for the AccountService class"
-"Create a new Apex utility class for handling date operations"
-"Update the LeadConverter class to add a new method"
-```
-
-### Managing Apex Triggers
-
-```
-"List all triggers for the Account object"
-"Show me the code for the ContactTrigger"
-"Create a new trigger for the Opportunity object"
-"Update the Case trigger to handle after delete events"
-```
-
-### Executing Anonymous Apex Code
-
-```
-"Execute Apex code to calculate account metrics"
-"Run a script to update related records"
-"Execute a batch job to process large datasets"
-```
-
-### Managing Debug Logs
-
-```
+"Count open Opportunities by Stage"
+"Create a Customer Feedback custom object"
+"Add a Rating picklist field to Account"
+"Grant read access to Rating__c for Marketing User"
+"Search for 'cloud' across Accounts and Opportunities"
+"Show me the AccountController Apex class"
 "Enable debug logs for user@example.com"
-"Retrieve recent logs for an admin user"
-"Disable debug logs for a specific user"
-"Configure log level to DEBUG for a user"
+"Execute Apex: System.debug(UserInfo.getUserId());"
 ```
+
+---
 
 ## Development
 
-### Building from source
-
 ```bash
-# Clone the repository
 git clone https://github.com/federico-alunni/mcp-server-salesforce.git
-
-# Navigate to directory
 cd mcp-server-salesforce
-
-# Install dependencies
 npm install
-
-# Build the project
 npm run build
 ```
 
+See [TRANSPORT_GUIDE.md](TRANSPORT_GUIDE.md) for endpoint and request format details.
+
+---
+
 ## Contributing
 
-Contributions are welcome! Feel free to submit a Pull Request.
+Contributions are welcome. Please submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
-## Issues and Support
+## Issues and support
 
-If you encounter any issues or need support, please file an issue on the [GitHub repository](https://github.com/federico-alunni/mcp-server-salesforce/issues).
+File an issue on the [GitHub repository](https://github.com/federico-alunni/mcp-server-salesforce/issues).
