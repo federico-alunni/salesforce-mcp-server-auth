@@ -2,7 +2,6 @@
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -11,7 +10,7 @@ import * as dotenv from "dotenv";
 import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
 
-import { getConnectionForRequest, validateAuthConfig } from "./utils/connection.js";
+import { getConnectionForRequest } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
 import { classifySalesforceError, formatClassifiedError } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
@@ -79,92 +78,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (!args) throw new Error('Arguments are required');
 
-    // Extract auth context from HTTP headers
-    // x-mcp-auth-mode decides which flow to use (defaults to 'strict')
-    let requestContext: RequestContext | undefined;
-
+    // Extract the Bearer token from the Authorization header.
+    // The header is injected by the client (e.g. LibreChat) before every
+    // tool call; the server never stores credentials between requests.
     const store = asyncLocalStorage.getStore();
-    if (store?.headers) {
-      const h = store.headers;
+    const rawAuth = store?.headers?.['authorization'];
+    const authStr = Array.isArray(rawAuth) ? rawAuth[0] : rawAuth;
+    const accessToken = authStr?.startsWith('Bearer ') ? authStr.slice(7) : undefined;
 
-      // Helper to normalise single-value headers
-      const str = (v: string | string[] | undefined): string | undefined =>
-        v ? (Array.isArray(v) ? v[0] : v) : undefined;
-
-      const requestAuthMode = (str(h['x-mcp-auth-mode']) ?? 'strict') as 'strict' | 'oauth';
-      const instanceHeader  = str(h['x-salesforce-instance-url']);
-
-      logger.debug('Auth headers received:', {
-        'x-mcp-auth-mode': requestAuthMode,
-        'x-salesforce-instance-url': instanceHeader ?? 'MISSING',
-      });
-
-      if (requestAuthMode === 'oauth') {
-        const clientId     = str(h['x-salesforce-client-id']);
-        const clientSecret = str(h['x-salesforce-client-secret']);
-
-        logger.debug('OAuth client-credentials headers:', {
-          'x-salesforce-client-id':     clientId     ? `${clientId.substring(0, 8)}...` : 'MISSING',
-          'x-salesforce-client-secret': clientSecret ? '***' : 'MISSING',
-          'x-salesforce-instance-url':  instanceHeader ?? 'MISSING',
-        });
-
-        if (clientId && clientSecret && instanceHeader) {
-          requestContext = {
-            requestAuthMode: 'oauth',
-            oauthCredentials: { clientId, clientSecret, instanceUrl: instanceHeader },
-          };
-          logger.debug('OAuth client-credentials context built from headers');
-        } else {
-          logger.warn('Missing required oauth headers', {
-            hasClientId:     !!clientId,
-            hasClientSecret: !!clientSecret,
-            hasInstanceUrl:  !!instanceHeader,
-          });
-        }
-      } else {
-        // strict (default)
-        const authHeader     = str(h['x-salesforce-access-token']);
-        const usernameHeader = str(h['x-salesforce-username']);
-        const userIdHeader   = str(h['x-salesforce-user-id']);
-
-        logger.debug('Strict auth headers:', {
-          'x-salesforce-access-token': authHeader ? `${authHeader.substring(0, 8)}...` : 'MISSING',
-          'x-salesforce-instance-url': instanceHeader ?? 'MISSING',
-          'x-salesforce-username':     usernameHeader ?? 'MISSING',
-          'x-salesforce-user-id':      userIdHeader   ?? 'MISSING',
-        });
-
-        if (authHeader && instanceHeader) {
-          requestContext = {
-            requestAuthMode: 'strict',
-            salesforceAuth: {
-              accessToken: authHeader,
-              instanceUrl: instanceHeader,
-              username:    usernameHeader,
-              userId:      userIdHeader,
-            },
-          };
-          logger.debug('Strict OAuth context built from headers');
-        } else {
-          logger.warn('Missing required strict auth headers', {
-            hasAccessToken: !!authHeader,
-            hasInstanceUrl: !!instanceHeader,
-          });
-        }
-      }
-    } else {
-      logger.warn('No AsyncLocalStorage store or headers found');
+    if (!accessToken) {
+      throw new Error(
+        'Missing or malformed Authorization header. ' +
+        'Expected: Authorization: Bearer <salesforce_access_token>'
+      );
     }
 
-    // Log user context if available
-    if (requestContext?.salesforceAuth) {
-      const { username, userId } = requestContext.salesforceAuth;
-      logger.userOperation(name, username, userId, name);
-    }
+    const requestContext: RequestContext = { accessToken };
 
+    logger.debug('Bearer token received, length=' + accessToken.length);
     logger.toolCall(name, args);
-    
+
     const conn = await getConnectionForRequest(requestContext);
     logger.debug('Salesforce connection established');
 
@@ -499,141 +432,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-type TransportType = 'sse' | 'streamable-http';
-
-function getTransportType(): TransportType {
-  // Check command line arguments first
-  if (process.argv.includes('--sse')) return 'sse';
-  if (process.argv.includes('--http') || process.argv.includes('--streamable-http')) return 'streamable-http';
-  
-  // Check environment variable
-  const envTransport = process.env.MCP_TRANSPORT_TYPE?.toLowerCase() as TransportType;
-  if (envTransport && ['sse', 'streamable-http'].includes(envTransport)) {
-    return envTransport;
-  }
-  
-  // Legacy environment variable for backward compatibility
-  if (process.env.MCP_SERVER_HTTP === 'true') return 'streamable-http';
-  
-  // Default to streamable-http
-  return 'streamable-http';
-}
-
 async function runServer() {
-  const transportType = getTransportType();
   const port = parseInt(process.env.MCP_SERVER_PORT || '3000');
-  
-  // Fail fast if the auth configuration is invalid
-  validateAuthConfig();
 
-  logger.info(`Starting Salesforce MCP Server with ${transportType} transport...`);
+  logger.info('Starting Salesforce MCP Server (Streamable HTTP)...');
   logger.debug('Configuration:', {
-    transport: transportType,
-    port: port,
-    instanceUrl: process.env.SALESFORCE_INSTANCE_URL,
-    logLevel: process.env.MCP_LOG_LEVEL || 'INFO'
+    transport: 'streamable-http',
+    port,
+    loginUrl: process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com',
+    logLevel: process.env.MCP_LOG_LEVEL || 'INFO',
   });
-  
-  switch (transportType) {
-    case 'sse':
-      await runSSEServer(port);
-      break;
-    case 'streamable-http':
-      await runStreamableHTTPServer(port);
-      break;
-    default:
-      throw new Error(`Unsupported transport type: ${transportType}`);
-  }
-}
 
-async function runSSEServer(port: number) {
-  const app = express();
-  app.use(express.json());
-  
-  // Store transports by session ID
-  const transports: Record<string, SSEServerTransport> = {};
-  
-  // Health check endpoint
-  app.get('/health', (req, res) => {
-    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
-    res.json({
-      status: 'healthy',
-      authMode: currentAuthMode,
-      authHeaders: {
-        strict: {
-          required: ['x-mcp-auth-mode (value: strict, or omit for default)', 'x-salesforce-access-token', 'x-salesforce-instance-url'],
-          optional: ['x-salesforce-username', 'x-salesforce-user-id'],
-        },
-        oauth: {
-          required: ['x-mcp-auth-mode (value: oauth)', 'x-salesforce-client-id', 'x-salesforce-client-secret', 'x-salesforce-instance-url'],
-        },
-      },
-      toolsAvailable: 15,
-      transport: 'sse',
-      cacheEnabled: true,
-      cacheTTL: parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000')
-    });
-  });
-  
-  // SSE endpoint for establishing connection
-  app.get('/sse', async (req, res) => {
-    try {
-      const transport = new SSEServerTransport('/messages', res);
-      transports[transport.sessionId] = transport;
-      
-      // Clean up when client disconnects
-      res.on('close', () => {
-        delete transports[transport.sessionId];
-        logger.debug(`SSE connection closed: ${transport.sessionId}`);
-      });
-      
-      await server.connect(transport);
-      logger.info(`New SSE connection established: ${transport.sessionId}`);
-    } catch (error) {
-      logger.error('Error setting up SSE connection:', error);
-      if (!res.headersSent) {
-        res.status(500).send('Failed to establish SSE connection');
-      }
-    }
-  });
-  
-  // Message endpoint for receiving client messages
-  app.post('/messages', async (req, res) => {
-    try {
-      const sessionId = req.query.sessionId as string;
-      const transport = transports[sessionId];
-      
-      if (!transport) {
-        logger.warn(`Invalid SSE session ID: ${sessionId}`);
-        res.status(400).json({
-          jsonrpc: '2.0',
-          error: { code: -32000, message: 'Invalid session ID' },
-          id: null
-        });
-        return;
-      }
-      
-      // Store headers in AsyncLocalStorage for access in tool handlers
-      await asyncLocalStorage.run({ headers: req.headers }, async () => {
-        await transport.handlePostMessage(req, res, req.body);
-      });
-    } catch (error) {
-      logger.error('Error handling SSE message:', error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: { code: -32603, message: 'Internal server error' },
-          id: null
-        });
-      }
-    }
-  });
-  
-  app.listen(port, () => {
-    logger.info(`Salesforce MCP Server running on SSE port ${port}`);
-    logger.info(`SSE endpoint: http://localhost:${port}/sse`);
-    logger.info(`Messages endpoint: http://localhost:${port}/messages`);
-  });
+  await runStreamableHTTPServer(port);
 }
 
 async function runStreamableHTTPServer(port: number) {
@@ -646,23 +456,13 @@ async function runStreamableHTTPServer(port: number) {
   // Health check endpoint
   app.get('/health', (req, res) => {
     logger.verbose('Health check requested');
-    const currentAuthMode = process.env.MCP_AUTH_MODE || 'strict';
     res.json({
       status: 'healthy',
-      authMode: currentAuthMode,
-      authHeaders: {
-        strict: {
-          required: ['x-mcp-auth-mode (value: strict, or omit for default)', 'x-salesforce-access-token', 'x-salesforce-instance-url'],
-          optional: ['x-salesforce-username', 'x-salesforce-user-id'],
-        },
-        oauth: {
-          required: ['x-mcp-auth-mode (value: oauth)', 'x-salesforce-client-id', 'x-salesforce-client-secret', 'x-salesforce-instance-url'],
-        },
-      },
-      toolsAvailable: 15,
       transport: 'streamable-http',
-      cacheEnabled: true,
-      cacheTTL: parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000')
+      auth: 'Authorization: Bearer <salesforce_access_token>',
+      instanceDiscovery: `${process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com'}/services/oauth2/userinfo`,
+      instanceUrlCacheTTL: parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000'),
+      toolsAvailable: 15,
     });
     logger.verbose('Health check response sent');
   });

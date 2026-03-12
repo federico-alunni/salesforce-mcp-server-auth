@@ -1,222 +1,145 @@
 import jsforce from 'jsforce';
-import { RequestContext, OAuthClientCredentialsContext } from '../types/connection.js';
+import { createHash } from 'crypto';
+import { RequestContext } from '../types/connection.js';
 import https from 'https';
-import querystring from 'querystring';
 import { logger } from './logger.js';
 
-// Connection cache with TTL
-interface CachedConnection {
-  connection: any; // jsforce Connection type
+// ---------------------------------------------------------------------------
+// Instance URL discovery cache
+// ---------------------------------------------------------------------------
+// We never store raw access tokens. The cache key is a SHA-256 digest of the
+// token so that the in-memory map contains no secrets even if it were somehow
+// inspected at runtime.
+// ---------------------------------------------------------------------------
+
+interface CachedInstanceUrl {
+  instanceUrl: string;
   expiresAt: number;
-  username?: string;
 }
 
-const connectionCache = new Map<string, CachedConnection>();
-const CONNECTION_CACHE_TTL = parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000'); // 5 minutes default
+const instanceUrlCache = new Map<string, CachedInstanceUrl>();
+const INSTANCE_URL_CACHE_TTL = parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000'); // 5 min default
 
-/**
- * Validates that MCP_AUTH_MODE is one of the accepted values.
- * Credentials are no longer held in env vars — they arrive as per-request
- * headers, so no secret validation is needed at startup.
- */
-export function validateAuthConfig(): void {
-  const authMode = process.env.MCP_AUTH_MODE || 'strict';
-  const valid = ['strict', 'oauth', 'both'];
-
-  if (!valid.includes(authMode)) {
-    throw new Error(
-      `Invalid MCP_AUTH_MODE value "${authMode}". Supported values: strict, oauth, both`
-    );
-  }
-
-  logger.info(`Auth mode: ${authMode}. ${
-    authMode === 'strict' ? 'Only per-request access-token headers accepted.' :
-    authMode === 'oauth'  ? 'Only per-request client-credentials headers accepted.' :
-                            'Both strict and oauth per-request headers accepted.'
-  }`);
+/** SHA-256 digest of the token — used as the non-sensitive cache key. */
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }
 
-/**
- * Get a cache key for a given access token.
- * Uses the full token as the key to avoid collisions between different tokens
- * that share the same prefix. The cache is in-memory only and never logged.
- */
-function getCacheKey(accessToken: string): string {
-  return `token_${accessToken}`;
-}
-
-/**
- * Clean expired connections from cache
- */
-function cleanExpiredConnections(): void {
+/** Remove stale entries so the map does not grow unboundedly. */
+function cleanExpiredEntries(): void {
   const now = Date.now();
-  for (const [key, cached] of connectionCache.entries()) {
+  for (const [key, cached] of instanceUrlCache.entries()) {
     if (cached.expiresAt < now) {
-      logger.debug(`Removing expired connection from cache: ${key}`);
-      connectionCache.delete(key);
+      instanceUrlCache.delete(key);
     }
   }
 }
 
-/**
- * Build a per-org cache key for client-credentials connections.
- */
-function getOAuthCacheKey(instanceUrl: string, clientId: string): string {
-  return `oauth_${instanceUrl}_${clientId.substring(0, 8)}`;
-}
+// ---------------------------------------------------------------------------
+// Instance URL discovery via Salesforce userinfo endpoint
+// ---------------------------------------------------------------------------
 
 /**
- * Creates a Salesforce connection using the OAuth 2.0 Client Credentials flow.
- * Credentials are supplied per-request via headers, enabling multi-org usage.
+ * Calls the Salesforce userinfo endpoint using the supplied Bearer token and
+ * returns the instance URL for that org.
+ *
+ * The login URL defaults to `https://login.salesforce.com` but can be
+ * overridden with the `SALESFORCE_LOGIN_URL` env var (e.g. to point at
+ * `https://test.salesforce.com` for sandbox orgs).
+ *
+ * Results are cached by SHA-256(token) for `INSTANCE_URL_CACHE_TTL` ms to
+ * avoid hitting the userinfo endpoint on every single tool call.
  */
-async function createOAuthClientCredentialsConnection(credentials: OAuthClientCredentialsContext): Promise<any> {
-  const { clientId, clientSecret, instanceUrl } = credentials;
+async function discoverInstanceUrl(accessToken: string): Promise<string> {
+  cleanExpiredEntries();
 
-  logger.salesforceCall('OAuth 2.0 Client Credentials (x-mcp-auth-mode: oauth)', { instanceUrl });
+  const cacheKey = hashToken(accessToken);
+  const cached = instanceUrlCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    logger.debug('Using cached instance URL for token');
+    return cached.instanceUrl;
+  }
 
-  const tokenUrl = new URL('/services/oauth2/token', instanceUrl);
-  const requestBody = querystring.stringify({
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
-  });
+  const loginUrl = process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com';
+  const userinfoUrl = new URL('/services/oauth2/userinfo', loginUrl);
 
-  const tokenResponse = await new Promise<any>((resolve, reject) => {
+  logger.salesforceCall('Discover instance URL via userinfo', { loginUrl: userinfoUrl.origin });
+
+  const body = await new Promise<string>((resolve, reject) => {
     const req = https.request(
       {
-        method: 'POST',
-        hostname: tokenUrl.hostname,
-        path: tokenUrl.pathname,
+        method: 'GET',
+        hostname: userinfoUrl.hostname,
+        path: userinfoUrl.pathname,
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Content-Length': Buffer.byteLength(requestBody),
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
         },
       },
       (res) => {
         let data = '';
-        res.on('data', (chunk) => { data += chunk; });
+        res.on('data', (chunk: string) => { data += chunk; });
         res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (res.statusCode !== 200) {
-              reject(new Error(
-                `OAuth token request failed (HTTP ${res.statusCode}): ` +
-                `${parsed.error} - ${parsed.error_description}`
-              ));
-            } else {
-              resolve(parsed);
-            }
-          } catch (e: unknown) {
-            reject(new Error(`Failed to parse OAuth token response: ${e instanceof Error ? e.message : String(e)}`));
+          if (res.statusCode !== 200) {
+            reject(new Error(
+              `Salesforce userinfo request failed (HTTP ${res.statusCode}). ` +
+              `Verify that the access token is valid and not expired.`
+            ));
+          } else {
+            resolve(data);
           }
         });
       }
     );
-
-    req.on('error', (e) => reject(new Error(`OAuth request error: ${e.message}`)));
-    req.write(requestBody);
+    req.on('error', (e: Error) => reject(new Error(`Userinfo request error: ${e.message}`)));
     req.end();
   });
 
-  logger.debug('OAuth client-credentials token received successfully');
+  let instanceUrl: string;
+  try {
+    const json = JSON.parse(body);
+    // `profile` is always present and takes the form https://<instance>.salesforce.com/id/...
+    // We extract just the origin (scheme + host) as the instance URL.
+    if (json.profile) {
+      instanceUrl = new URL(json.profile as string).origin;
+    } else if (json.urls?.rest) {
+      // Fallback: derive from the REST URL template
+      instanceUrl = new URL((json.urls.rest as string).replace('{version}', '')).origin;
+    } else {
+      throw new Error('Salesforce userinfo response did not contain a usable instance URL field.');
+    }
+  } catch (e: unknown) {
+    throw new Error(
+      `Failed to parse Salesforce userinfo response: ${e instanceof Error ? e.message : String(e)}`
+    );
+  }
 
-  const conn = new jsforce.Connection({
-    instanceUrl: tokenResponse.instance_url,
-    accessToken: tokenResponse.access_token,
-  });
-
-  setupConnectionLogging(conn);
-  return conn;
+  instanceUrlCache.set(cacheKey, { instanceUrl, expiresAt: Date.now() + INSTANCE_URL_CACHE_TTL });
+  logger.debug(`Discovered and cached instance URL: ${instanceUrl}`);
+  return instanceUrl;
 }
 
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
 /**
- * Get or create a Salesforce connection based on:
- *   - `x-mcp-auth-mode` request header  → 'strict' (default) or 'oauth'
- *   - `MCP_AUTH_MODE` environment var    → 'strict' | 'oauth' | 'both' (server gate)
+ * Build a jsforce Connection for the requesting user.
  *
- * strict: requires x-salesforce-access-token + x-salesforce-instance-url headers.
- * oauth:  requires x-salesforce-client-id + x-salesforce-client-secret +
- *         x-salesforce-instance-url headers. Supports multiple orgs simultaneously.
+ * The access token is sourced from the `Authorization: Bearer <token>` HTTP
+ * header (extracted by the transport layer and placed in `context`). The
+ * Salesforce instance URL is discovered automatically by calling the
+ * userinfo endpoint — no instance URL needs to be configured or passed by
+ * the client.
  */
-export async function getConnectionForRequest(context?: RequestContext): Promise<any> {
-  // Clean expired connections periodically
-  cleanExpiredConnections();
+export async function getConnectionForRequest(context: RequestContext): Promise<any> {
+  const { accessToken } = context;
+  const instanceUrl = await discoverInstanceUrl(accessToken);
 
-  const serverMode = process.env.MCP_AUTH_MODE || 'strict';
-  const requestMode = context?.requestAuthMode ?? 'strict';
+  logger.debug(`Building jsforce connection for instance: ${instanceUrl}`);
 
-  // Enforce server-level gate
-  if (serverMode !== 'both' && serverMode !== requestMode) {
-    throw new Error(
-      `This server is configured for MCP_AUTH_MODE=${serverMode} but the request ` +
-      `supplied x-mcp-auth-mode: ${requestMode}. ` +
-      `Set MCP_AUTH_MODE=both on the server to accept both modes.`
-    );
-  }
-
-  // ── oauth mode ────────────────────────────────────────────────────────────
-  if (requestMode === 'oauth') {
-    if (!context?.oauthCredentials) {
-      throw new Error(
-        'x-mcp-auth-mode: oauth requires the following headers: ' +
-        'x-salesforce-client-id, x-salesforce-client-secret, x-salesforce-instance-url.'
-      );
-    }
-
-    const { clientId, instanceUrl } = context.oauthCredentials;
-    const cacheKey = getOAuthCacheKey(instanceUrl, clientId);
-    const cached = connectionCache.get(cacheKey);
-
-    if (cached && cached.expiresAt > Date.now()) {
-      logger.debug(`Using cached OAuth client-credentials connection for: ${instanceUrl}`);
-      return cached.connection;
-    }
-
-    const conn = await createOAuthClientCredentialsConnection(context.oauthCredentials);
-
-    connectionCache.set(cacheKey, {
-      connection: conn,
-      expiresAt: Date.now() + CONNECTION_CACHE_TTL,
-    });
-
-    logger.debug(`Created and cached OAuth client-credentials connection for: ${instanceUrl}`);
-    return conn;
-  }
-
-  // ── strict mode (default) ─────────────────────────────────────────────────
-  if (!context?.salesforceAuth) {
-    throw new Error(
-      'x-mcp-auth-mode: strict (default) requires per-request OAuth credentials via HTTP headers. ' +
-      'Required: x-salesforce-access-token, x-salesforce-instance-url. ' +
-      'Optional: x-salesforce-username, x-salesforce-user-id.'
-    );
-  }
-
-  const { accessToken, instanceUrl, username, userId } = context.salesforceAuth;
-
-  const cacheKey = getCacheKey(accessToken);
-  const cached = connectionCache.get(cacheKey);
-
-  if (cached && cached.expiresAt > Date.now()) {
-    logger.debug(`Using cached connection for user: ${username || userId || 'unknown'}`);
-    return cached.connection;
-  }
-
-  logger.userOperation('create-connection', username, userId);
-  const conn = new jsforce.Connection({
-    instanceUrl,
-    accessToken,
-  });
-
+  const conn = new jsforce.Connection({ instanceUrl, accessToken });
   setupConnectionLogging(conn);
-
-  connectionCache.set(cacheKey, {
-    connection: conn,
-    expiresAt: Date.now() + CONNECTION_CACHE_TTL,
-    username: username || userId,
-  });
-
-  logger.debug(`Created and cached new connection for user: ${username || userId || 'unknown'}`);
   return conn;
 }
 
