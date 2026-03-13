@@ -457,7 +457,9 @@ async function runServer() {
 async function runStreamableHTTPServer(port: number) {
   const app = express();
   app.use(express.json());
-  
+
+  const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
+
   // Store transports by session ID for stateful mode
   const transports: Record<string, StreamableHTTPServerTransport> = {};
   
@@ -471,10 +473,35 @@ async function runStreamableHTTPServer(port: number) {
       instanceDiscovery: `${process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com'}/services/oauth2/userinfo`,
       instanceUrlCacheTTL: parseInt(process.env.MCP_CONNECTION_CACHE_TTL || '300000'),
       toolsAvailable: 15,
+      oauthProtectedResource: `${serverUrl}/.well-known/oauth-protected-resource`,
     });
     logger.verbose('Health check response sent');
   });
-  
+
+  // OAuth 2.0 Protected Resource Metadata (RFC 9728) — publicly accessible, no auth required
+  app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+    res.json({
+      resource: serverUrl,
+      authorization_servers: ['https://login.salesforce.com'],
+    });
+  });
+
+  // Bearer token check — runs before the MCP SDK handler on every /mcp request,
+  // including the initial initialize. Returns 401 + WWW-Authenticate when the
+  // Authorization header is missing or not a Bearer token.
+  app.use('/mcp', (req, res, next) => {
+    const auth = req.headers['authorization'];
+    if (!auth || !auth.startsWith('Bearer ')) {
+      res.set(
+        'WWW-Authenticate',
+        `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource"`,
+      );
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    next();
+  });
+
   // Handle POST requests for client-to-server communication
   app.post('/mcp', async (req, res) => {
     try {
