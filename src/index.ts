@@ -459,6 +459,7 @@ async function runStreamableHTTPServer(port: number) {
   app.use(express.json());
 
   const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
+  const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid';
 
   // Store transports by session ID for stateful mode
   const transports: Record<string, StreamableHTTPServerTransport> = {};
@@ -483,6 +484,7 @@ async function runStreamableHTTPServer(port: number) {
     res.json({
       resource: serverUrl,
       authorization_servers: ['https://login.salesforce.com'],
+      scopes_supported: oauthScopes.split(' '),
     });
   });
 
@@ -494,7 +496,7 @@ async function runStreamableHTTPServer(port: number) {
     if (!auth || !auth.startsWith('Bearer ')) {
       res.set(
         'WWW-Authenticate',
-        `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource"`,
+        `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource", scope="${oauthScopes}"`,
       );
       res.status(401).json({ error: 'Unauthorized' });
       return;
