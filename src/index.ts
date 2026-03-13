@@ -460,6 +460,7 @@ async function runStreamableHTTPServer(port: number) {
 
   const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
   const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid';
+  const redirectUris = (process.env.MCP_REDIRECT_URIS || 'https://vscode.dev/redirect https://memo-librechat.up.railway.app/api/mcp/salesforce/oauth/callback').split(' ');
 
   // Store transports by session ID for stateful mode
   const transports: Record<string, StreamableHTTPServerTransport> = {};
@@ -485,6 +486,7 @@ async function runStreamableHTTPServer(port: number) {
       resource: serverUrl,
       authorization_servers: ['https://login.salesforce.com'],
       scopes_supported: oauthScopes.split(' '),
+      redirect_uris: redirectUris,
     });
   });
 
