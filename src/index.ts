@@ -481,10 +481,29 @@ async function runStreamableHTTPServer(port: number) {
 
   const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
   const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid';
+  // Additional paths that should mirror the OAuth protected resource metadata.
+  // Useful when clients construct the well-known URL differently (e.g. appending /mcp).
+  const oauthAliasesRaw = process.env.MCP_OAUTH_WELL_KNOWN_ALIASES ?? '/.well-known/oauth-protected-resource/mcp';
+  const oauthAliases = oauthAliasesRaw.split(',').map(p => p.trim()).filter(p => p.length > 0);
 
   // Store transports by session ID for stateful mode
   const transports: Record<string, StreamableHTTPServerTransport> = {};
-  
+
+  // Root route — basic server info for browser / probe requests
+  app.get('/', (_req, res) => {
+    res.json({
+      name: 'salesforce-mcp-server',
+      version: '1.0.0',
+      status: 'running',
+      endpoints: { mcp: '/mcp', health: '/health' },
+    });
+  });
+
+  // Suppress browser favicon requests silently
+  app.get('/favicon.ico', (_req, res) => {
+    res.status(204).end();
+  });
+
   // Health check endpoint
   app.get('/health', (req, res) => {
     logger.verbose('Health check requested');
@@ -501,13 +520,19 @@ async function runStreamableHTTPServer(port: number) {
   });
 
   // OAuth 2.0 Protected Resource Metadata (RFC 9728) — publicly accessible, no auth required
-  app.get('/.well-known/oauth-protected-resource', (_req, res) => {
+  const oauthMetadataHandler = (_req: express.Request, res: express.Response) => {
     res.json({
       resource: serverUrl,
-      authorization_servers: ['https://login.salesforce.com'],
+      authorization_servers: [process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com'],
       scopes_supported: oauthScopes.split(' '),
     });
-  });
+  };
+  app.get('/.well-known/oauth-protected-resource', oauthMetadataHandler);
+  // Register configurable aliases (MCP_OAUTH_WELL_KNOWN_ALIASES)
+  for (const alias of oauthAliases) {
+    app.get(alias, oauthMetadataHandler);
+    logger.debug(`OAuth metadata also served at: ${alias}`);
+  }
 
   // Bearer token check — runs before the MCP SDK handler on every /mcp request,
   // including the initial initialize. Returns 401 + WWW-Authenticate when the
