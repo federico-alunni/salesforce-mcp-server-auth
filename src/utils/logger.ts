@@ -208,7 +208,7 @@ class Logger {
     const agentPart = userAgent ? ` | UA: ${userAgent}` : '';
     this.debug(`[HTTP] ${method} ${path} from ${ip}${sessionPart}${agentPart}`);
     if (headers && this.level >= LogLevel.VERBOSE) {
-      this.verbose('[HTTP] Request headers:', this.sanitizeHeaders(headers));
+      this.verbose(`[HTTP] Request headers: ${JSON.stringify(this.sanitizeHeaders(headers))}`);
     }
     if (body !== undefined && this.level >= LogLevel.VERBOSE) {
       this.verbose('[HTTP] Request body:', this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000));
