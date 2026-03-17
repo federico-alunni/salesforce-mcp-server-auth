@@ -521,18 +521,73 @@ async function runStreamableHTTPServer(port: number) {
 
   // OAuth 2.0 Protected Resource Metadata (RFC 9728) — publicly accessible, no auth required
   const oauthMetadataHandler = (_req: express.Request, res: express.Response) => {
+    res.set('Access-Control-Allow-Origin', '*');
     res.json({
       resource: serverUrl,
       authorization_servers: [process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com'],
       scopes_supported: oauthScopes.split(' '),
+      bearer_methods_supported: ['header'],
     });
   };
+  // CORS preflight for discovery endpoints
+  const corsPreflight = (_req: express.Request, res: express.Response) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type');
+    res.status(204).end();
+  };
+
+  app.options('/.well-known/oauth-protected-resource', corsPreflight);
   app.get('/.well-known/oauth-protected-resource', oauthMetadataHandler);
   // Register configurable aliases (MCP_OAUTH_WELL_KNOWN_ALIASES)
   for (const alias of oauthAliases) {
+    app.options(alias, corsPreflight);
     app.get(alias, oauthMetadataHandler);
     logger.debug(`OAuth metadata also served at: ${alias}`);
   }
+
+  // --- Authorization Server Metadata (proxied from Salesforce) ---
+  // Provides RFC 8414 / OpenID Connect discovery so clients that perform
+  // root-based /.well-known/oauth-authorization-server discovery against
+  // this server's origin can locate the Salesforce authorization endpoints.
+  const salesforceLoginUrl = process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com';
+  const authServerMetadataCacheTTL = parseInt(process.env.MCP_AUTH_SERVER_METADATA_CACHE_TTL || '3600000');
+  let authServerMetadataCache: { data: unknown; fetchedAt: number } | null = null;
+
+  async function fetchAuthServerMetadata(): Promise<unknown> {
+    const now = Date.now();
+    if (authServerMetadataCache && (now - authServerMetadataCache.fetchedAt) < authServerMetadataCacheTTL) {
+      return authServerMetadataCache.data;
+    }
+    const discoveryUrl = `${salesforceLoginUrl}/.well-known/openid-configuration`;
+    logger.debug(`Fetching authorization server metadata from ${discoveryUrl}`);
+    const response = await fetch(discoveryUrl);
+    if (!response.ok) {
+      throw new Error(`Upstream metadata fetch failed: ${response.status} ${response.statusText}`);
+    }
+    const metadata = await response.json();
+    authServerMetadataCache = { data: metadata, fetchedAt: now };
+    return metadata;
+  }
+
+  const authServerMetadataHandler = async (_req: express.Request, res: express.Response) => {
+    try {
+      const metadata = await fetchAuthServerMetadata();
+      res.set('Access-Control-Allow-Origin', '*');
+      res.json(metadata);
+    } catch (error) {
+      logger.error('Failed to fetch authorization server metadata:', error);
+      res.redirect(302, `${salesforceLoginUrl}/.well-known/openid-configuration`);
+    }
+  };
+
+  app.options('/.well-known/oauth-authorization-server', corsPreflight);
+  app.get('/.well-known/oauth-authorization-server', authServerMetadataHandler);
+  app.options('/.well-known/oauth-authorization-server/mcp', corsPreflight);
+  app.get('/.well-known/oauth-authorization-server/mcp', authServerMetadataHandler);
+  // Also support OpenID Connect discovery path for clients that use it
+  app.options('/.well-known/openid-configuration', corsPreflight);
+  app.get('/.well-known/openid-configuration', authServerMetadataHandler);
 
   // Bearer token check — runs before the MCP SDK handler on every /mcp request,
   // including the initial initialize. Returns 401 + WWW-Authenticate when the
