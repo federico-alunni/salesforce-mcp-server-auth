@@ -177,6 +177,48 @@ class Logger {
     const durationStr = duration ? ` in ${duration}ms` : '';
     this.debug(`[SOQL Result] ${recordCount} records${durationStr}`);
   }
+
+  // Mask the value of the Authorization header so tokens never appear in logs
+  private sanitizeHeaders(headers: Record<string, string | string[] | undefined>): Record<string, string | string[] | undefined> {
+    const sanitized = { ...headers };
+    if (sanitized['authorization']) {
+      const raw = Array.isArray(sanitized['authorization'])
+        ? sanitized['authorization'][0]
+        : sanitized['authorization'];
+      if (raw && raw.startsWith('Bearer ')) {
+        sanitized['authorization'] = `Bearer ${this.maskToken(raw.slice(7))}`;
+      } else {
+        sanitized['authorization'] = '***REDACTED***';
+      }
+    }
+    return sanitized;
+  }
+
+  // Log every HTTP request arriving at the Express server
+  httpRequest(
+    method: string,
+    path: string,
+    ip: string,
+    userAgent?: string,
+    sessionId?: string,
+    headers?: Record<string, string | string[] | undefined>,
+    body?: any
+  ): void {
+    const sessionPart = sessionId ? ` [Session: ${sessionId}]` : '';
+    const agentPart = userAgent ? ` | UA: ${userAgent}` : '';
+    this.debug(`[HTTP] ${method} ${path} from ${ip}${sessionPart}${agentPart}`);
+    if (headers && this.level >= LogLevel.VERBOSE) {
+      this.verbose('[HTTP] Request headers:', this.sanitizeHeaders(headers));
+    }
+    if (body !== undefined && this.level >= LogLevel.VERBOSE) {
+      this.verbose('[HTTP] Request body:', this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000));
+    }
+  }
+
+  // Log every HTTP response (called from res.on('finish'))
+  httpResponse(method: string, path: string, statusCode: number, duration: number): void {
+    this.debug(`[HTTP] ${method} ${path} → ${statusCode} (${duration}ms)`);
+  }
 }
 
 // Export singleton instance

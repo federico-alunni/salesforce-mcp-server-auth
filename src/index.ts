@@ -458,6 +458,27 @@ async function runStreamableHTTPServer(port: number) {
   const app = express();
   app.use(express.json());
 
+  // Universal request logging — runs before every route handler, including
+  // unauthenticated and non-existent routes. Logs arrival at DEBUG and
+  // response status+duration via res.on('finish').
+  app.use((req, res, next) => {
+    const startTime = Date.now();
+    const sessionId = req.headers['mcp-session-id'] as string | undefined;
+    logger.httpRequest(
+      req.method,
+      req.path,
+      req.ip ?? req.socket.remoteAddress ?? 'unknown',
+      req.headers['user-agent'],
+      sessionId,
+      req.headers as Record<string, string | string[] | undefined>,
+      req.body
+    );
+    res.on('finish', () => {
+      logger.httpResponse(req.method, req.path, res.statusCode, Date.now() - startTime);
+    });
+    next();
+  });
+
   const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
   const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid';
 
@@ -596,6 +617,12 @@ async function runStreamableHTTPServer(port: number) {
     logger.verbose(`Session termination response sent for session: ${sessionId}`);
   });
   
+  // Catch-all: log and reject requests to any route not defined above
+  app.use((req, res) => {
+    logger.warn(`[HTTP] 404 Not Found: ${req.method} ${req.path}`);
+    res.status(404).json({ error: 'Not Found' });
+  });
+
   app.listen(port, () => {
     logger.info(`Salesforce MCP Server running on Streamable HTTP port ${port}`);
     logger.info(`Connect to: http://localhost:${port}/mcp`);
