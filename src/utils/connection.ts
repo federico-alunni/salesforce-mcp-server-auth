@@ -114,6 +114,13 @@ function parseInstanceUrl(body: string): string {
  *
  * Results are cached by SHA-256(token) for MCP_CONNECTION_CACHE_TTL ms.
  */
+/** Evict a token's cached instance URL, forcing re-validation on the next request. */
+export function invalidateInstanceUrlCache(accessToken: string): void {
+  const cacheKey = hashToken(accessToken);
+  instanceUrlCache.delete(cacheKey);
+  logger.debug('Invalidated cached instance URL for token — next pre-flight will re-validate against Salesforce');
+}
+
 export async function discoverInstanceUrl(accessToken: string): Promise<string> {
   cleanExpiredEntries();
 

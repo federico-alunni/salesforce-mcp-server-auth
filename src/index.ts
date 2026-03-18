@@ -13,7 +13,7 @@ import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
 import { randomUUID } from "crypto";
 
-import { getConnectionForRequest, discoverInstanceUrl } from "./utils/connection.js";
+import { getConnectionForRequest, discoverInstanceUrl, invalidateInstanceUrlCache } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
 import { classifySalesforceError, formatClassifiedError, SalesforceErrorType } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
@@ -436,6 +436,10 @@ const _callToolHandler = async (request: CallToolRequest) => {
     if (classified.type === SalesforceErrorType.INVALID_SESSION) {
       const store = asyncLocalStorage.getStore();
       const httpRes = store?.res;
+      // Evict the cached instance URL so the next pre-flight re-validates the
+      // token against Salesforce and can return HTTP 401 before SSE starts.
+      const rawToken = (store?.headers?.['authorization'] as string | undefined)?.slice(7);
+      if (rawToken) invalidateInstanceUrlCache(rawToken);
       if (httpRes && !httpRes.headersSent) {
         logger.warn(`[INVALID_SESSION] Salesforce rejected token for ${toolName}, returning HTTP 401`);
         httpRes.set('WWW-Authenticate', store.wwwAuthenticate || 'Bearer');
@@ -444,9 +448,10 @@ const _callToolHandler = async (request: CallToolRequest) => {
         // The client already has the 401; any "headers already sent" noise is harmless.
         throw new Error('__INVALID_SESSION_401_SENT__');
       } else {
-        // SSE stream already started — headers are sent, HTTP 401 is no longer possible.
-        // Log so we know this path is taken and can diagnose token refresh failures.
-        logger.warn(`[INVALID_SESSION] headers already sent (SSE stream active) for ${toolName} — cannot return HTTP 401; token refresh will not be triggered automatically`);
+        // SSE stream already started — HTTP 401 is not possible now.
+        // Cache has been evicted; the next request with this token will hit the
+        // pre-flight, call userinfo, get 401/403, and return HTTP 401 to Claude.ai.
+        logger.warn(`[INVALID_SESSION] SSE headers already sent for ${toolName} — cache evicted; HTTP 401 will be returned on next request to trigger token refresh`);
       }
     }
 
