@@ -70,7 +70,8 @@ export function classifySalesforceError(error: any): ClassifiedError {
     errorMessage.includes('Session expired') ||
     errorMessage.includes('Invalid Session ID') ||
     errorMessage.includes('userinfo request failed (HTTP 401)') ||
-    errorMessage.includes('userinfo request failed (HTTP 403)')
+    errorMessage.includes('userinfo request failed (HTTP 403)') ||
+    errorMessage.includes('All candidates returned 401/403/3xx')
   ) {
     return {
       type: SalesforceErrorType.INVALID_SESSION,
