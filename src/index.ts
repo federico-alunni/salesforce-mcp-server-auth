@@ -81,6 +81,25 @@ const _listToolsHandler = async () => ({
   ],
 });
 
+/**
+ * Finalize a tool result: re-throw INVALID_SESSION errors so the outer catch
+ * handler can evict the cache and return HTTP 401 to Claude.ai.
+ * Tool handlers catch all errors internally and return isError:true — without
+ * this re-throw, INVALID_SESSION would never reach the outer catch block.
+ */
+function returnResult(name: string, startTime: number, result: any): any {
+  if (result?.isError) {
+    const text = (result.content?.[0]?.text ?? '') as string;
+    const classified = classifySalesforceError(new Error(text));
+    if (classified.type === SalesforceErrorType.INVALID_SESSION) {
+      throw new Error(text); // propagate to outer catch for cache eviction + HTTP 401
+    }
+  }
+  logger.toolResult(name, Date.now() - startTime, !result?.isError);
+  logger.info('Tool response:', result);
+  return result;
+}
+
 const _callToolHandler = async (request: CallToolRequest) => {
   const startTime = Date.now();
   const toolName = request.params.name;
@@ -118,18 +137,14 @@ const _callToolHandler = async (request: CallToolRequest) => {
         const { searchPattern } = args as { searchPattern: string };
         if (!searchPattern) throw new Error('searchPattern is required');
         const result = await handleSearchObjects(conn, searchPattern);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_describe_object": {
         const { objectName } = args as { objectName: string };
         if (!objectName) throw new Error('objectName is required');
         const result = await handleDescribeObject(conn, objectName);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_query_records": {
@@ -146,9 +161,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           limit: queryArgs.limit as number | undefined
         };
         const result = await handleQueryRecords(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_aggregate_query": {
@@ -167,9 +180,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           limit: aggregateArgs.limit as number | undefined
         };
         const result = await handleAggregateQuery(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_dml_records": {
@@ -184,9 +195,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           externalIdField: dmlArgs.externalIdField as string | undefined
         };
         const result = await handleDMLRecords(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true, validatedArgs.records.length);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_manage_object": {
@@ -206,9 +215,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           sharingModel: objectArgs.sharingModel as 'ReadWrite' | 'Read' | 'Private' | 'ControlledByParent' | undefined
         };
         const result = await handleManageObject(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_manage_field": {
@@ -237,9 +244,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           grantAccessTo: fieldArgs.grantAccessTo as string[] | undefined
         };
         const result = await handleManageField(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_manage_field_permissions": {
@@ -256,9 +261,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
           editable: permArgs.editable as boolean | undefined
         };
         const result = await handleManageFieldPermissions(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_search_all": {
@@ -290,9 +293,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleSearchAll(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_read_apex": {
@@ -306,9 +307,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleReadApex(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_write_apex": {
@@ -326,9 +325,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleWriteApex(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_read_apex_trigger": {
@@ -342,9 +339,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleReadApexTrigger(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_write_apex_trigger": {
@@ -363,9 +358,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleWriteApexTrigger(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_execute_anonymous": {
@@ -381,9 +374,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleExecuteAnonymous(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       case "salesforce_manage_debug_logs": {
@@ -404,9 +395,7 @@ const _callToolHandler = async (request: CallToolRequest) => {
         };
 
         const result = await handleManageDebugLogs(conn, validatedArgs);
-        logger.toolResult(name, Date.now() - startTime, true);
-        logger.info('Tool response:', result);
-        return result;
+        return returnResult(name, startTime, result);
       }
 
       default:
