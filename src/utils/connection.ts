@@ -72,13 +72,14 @@ async function tryUserinfo(loginOrigin: string, accessToken: string): Promise<st
         res.on('end', () => {
           if (res.statusCode === 200) {
             resolve(data);
-          } else if (res.statusCode === 401 || res.statusCode === 403 ||
-                     (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400)) {
-            // 401/403 = token rejected by this endpoint; 3xx = wrong host (e.g. Lightning URL)
-            // Log the response body so we can diagnose the exact Salesforce error.
+          } else if (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 500) {
+            // 3xx = wrong host (e.g. Lightning URL); 4xx = token rejected / not valid for this endpoint.
+            // All 4xx (not just 401/403) must be treated as "skip to next candidate" — e.g.
+            // test.salesforce.com returns 404 "Bad_Id" for production-org tokens.
             logger.debug(`Userinfo at ${loginOrigin} → HTTP ${res.statusCode} body: ${data.slice(0, 500)}`);
             resolve(null);
           } else {
+            // 5xx = server-side error; propagate so the caller can fail loudly.
             logger.debug(`Userinfo at ${loginOrigin} → HTTP ${res.statusCode} body: ${data.slice(0, 500)}`);
             reject(new Error(`Userinfo at ${loginOrigin} failed (HTTP ${res.statusCode})`));
           }
