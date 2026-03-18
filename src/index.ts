@@ -15,7 +15,7 @@ import { randomUUID } from "crypto";
 
 import { getConnectionForRequest } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
-import { classifySalesforceError, formatClassifiedError } from "./utils/errorHandler.js";
+import { classifySalesforceError, formatClassifiedError, SalesforceErrorType } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
 import { SEARCH_OBJECTS, handleSearchObjects } from "./tools/search.js";
 import { DESCRIBE_OBJECT, handleDescribeObject } from "./tools/describe.js";
@@ -36,8 +36,29 @@ import { MANAGE_DEBUG_LOGS, handleManageDebugLogs, ManageDebugLogsArgs } from ".
 // Load environment variables silently
 dotenv.config();
 
-// AsyncLocalStorage for passing HTTP headers to tool handlers
-const asyncLocalStorage = new AsyncLocalStorage<{ headers?: Record<string, string | string[] | undefined> }>();
+// AsyncLocalStorage for passing HTTP headers (and response object) to tool handlers
+const asyncLocalStorage = new AsyncLocalStorage<{
+  headers?: Record<string, string | string[] | undefined>;
+  res?: express.Response;
+  wwwAuthenticate?: string;
+}>();
+
+/**
+ * Decode a JWT payload and return true if the token's exp claim is in the past.
+ * Does NOT verify the signature — expiry is a local check only.
+ * Returns false for non-JWT strings so they pass through to Salesforce.
+ */
+function isJwtExpired(token: string): boolean {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 3) return false;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    if (typeof payload.exp !== 'number') return false;
+    return payload.exp * 1000 < Date.now();
+  } catch {
+    return false;
+  }
+}
 
 // Tool handlers
 const _listToolsHandler = async () => ({
@@ -399,16 +420,32 @@ const _callToolHandler = async (request: CallToolRequest) => {
     }
   } catch (error) {
     const duration = Date.now() - startTime;
-    
+
     // Classify the error for better user feedback
     const classified = classifySalesforceError(error);
-    
+
     logger.error(
-      `Tool ${toolName} failed after ${duration}ms [${classified.type}]:`, 
+      `Tool ${toolName} failed after ${duration}ms [${classified.type}]:`,
       classified.message
     );
     logger.verbose('Error details:', error);
-    
+
+    // INVALID_SESSION means Salesforce rejected the token (expired or revoked).
+    // Write HTTP 401 directly so Claude.ai triggers its token-refresh flow instead
+    // of treating this as a regular tool error.
+    if (classified.type === SalesforceErrorType.INVALID_SESSION) {
+      const store = asyncLocalStorage.getStore();
+      const httpRes = store?.res;
+      if (httpRes && !httpRes.headersSent) {
+        logger.warn(`[INVALID_SESSION] Salesforce rejected token for ${toolName}, returning HTTP 401`);
+        httpRes.set('WWW-Authenticate', store.wwwAuthenticate || 'Bearer');
+        httpRes.status(401).json({ error: 'Unauthorized' });
+        // Throw so the MCP SDK does not attempt to write its own response.
+        // The client already has the 401; any "headers already sent" noise is harmless.
+        throw new Error('__INVALID_SESSION_401_SENT__');
+      }
+    }
+
     // Use classified error message for user-friendly feedback
     const errorMessage = formatClassifiedError(classified);
     const errorResp = {
@@ -618,17 +655,26 @@ async function runStreamableHTTPServer(port: number) {
   app.options('/.well-known/openid-configuration', corsPreflight);
   app.get('/.well-known/openid-configuration', authServerMetadataHandler);
 
-  // Bearer token check — runs before the MCP SDK handler on every /mcp request,
-  // including the initial initialize. Returns 401 + WWW-Authenticate when the
-  // Authorization header is missing or not a Bearer token.
+  // Helper — sends 401 + WWW-Authenticate and returns the header value for reuse
+  const wwwAuthValue = `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource", scope="${oauthScopes}"`;
+  const send401 = (res: express.Response) => {
+    res.set('WWW-Authenticate', wwwAuthValue);
+    res.status(401).json({ error: 'Unauthorized' });
+  };
+
+  // Bearer token check — runs before the MCP SDK handler on every /mcp request.
+  // 1. Rejects missing/non-Bearer auth immediately.
+  // 2. Rejects JWTs whose exp claim is already in the past (local check, no network).
   app.use('/mcp', (req, res, next) => {
     const auth = req.headers['authorization'];
     if (!auth || !auth.startsWith('Bearer ')) {
-      res.set(
-        'WWW-Authenticate',
-        `Bearer resource_metadata="${serverUrl}/.well-known/oauth-protected-resource", scope="${oauthScopes}"`,
-      );
-      res.status(401).json({ error: 'Unauthorized' });
+      send401(res);
+      return;
+    }
+    const token = auth.slice(7);
+    if (isJwtExpired(token)) {
+      logger.debug('Bearer token is expired (JWT exp), returning 401');
+      send401(res);
       return;
     }
     next();
@@ -678,7 +724,7 @@ async function runStreamableHTTPServer(port: number) {
       }
 
       // Store headers in AsyncLocalStorage for access in tool handlers
-      await asyncLocalStorage.run({ headers: req.headers }, async () => {
+      await asyncLocalStorage.run({ headers: req.headers, res, wwwAuthenticate: wwwAuthValue }, async () => {
         logger.verbose('Handling Streamable HTTP request');
         await transport.handleRequest(req, res, req.body);
         logger.verbose('Streamable HTTP request handled successfully');
