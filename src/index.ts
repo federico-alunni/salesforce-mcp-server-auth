@@ -546,7 +546,7 @@ async function runStreamableHTTPServer(port: number) {
   });
 
   const serverUrl = process.env.MCP_SERVER_URL || 'https://salesforce-mcp-server-org.up.railway.app';
-  const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid';
+  const oauthScopes = process.env.MCP_OAUTH_SCOPES || 'api refresh_token offline_access web openid id';
   // Additional paths that should mirror the OAuth protected resource metadata.
   // Useful when clients construct the well-known URL differently (e.g. appending /mcp).
   const oauthAliasesRaw = process.env.MCP_OAUTH_WELL_KNOWN_ALIASES ?? '/.well-known/oauth-protected-resource/mcp';
