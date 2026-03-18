@@ -62,11 +62,15 @@ export function classifySalesforceError(error: any): ClassifiedError {
   const errorCode = error.errorCode || error.name || '';
   
   // Check for INVALID_SESSION_ID errors (expired/invalid token)
+  // Also catches HTTP 401/403 from the userinfo endpoint (token issued by a
+  // different authorization server, or revoked).
   if (
     errorCode === 'INVALID_SESSION_ID' ||
     errorMessage.includes('INVALID_SESSION_ID') ||
     errorMessage.includes('Session expired') ||
-    errorMessage.includes('Invalid Session ID')
+    errorMessage.includes('Invalid Session ID') ||
+    errorMessage.includes('userinfo request failed (HTTP 401)') ||
+    errorMessage.includes('userinfo request failed (HTTP 403)')
   ) {
     return {
       type: SalesforceErrorType.INVALID_SESSION,
