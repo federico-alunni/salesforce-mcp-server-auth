@@ -528,13 +528,13 @@ async function runStreamableHTTPServer(port: number) {
       const originalEnd = res.end.bind(res);
       (res as any).write = (chunk: any, ...args: any[]) => {
         if (chunk && bodyChunks.length < 10) {
-          try { bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); } catch { /* ignore */ }
+          try { bodyChunks.push(chunk instanceof Uint8Array ? Buffer.from(chunk) : Buffer.from(String(chunk))); } catch { /* ignore */ }
         }
         return (originalWrite as any)(chunk, ...args);
       };
       (res as any).end = (chunk?: any, ...args: any[]) => {
         if (chunk && typeof chunk !== 'function' && bodyChunks.length < 10) {
-          try { bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); } catch { /* ignore */ }
+          try { bodyChunks.push(chunk instanceof Uint8Array ? Buffer.from(chunk) : Buffer.from(String(chunk))); } catch { /* ignore */ }
         }
         return (originalEnd as any)(chunk, ...args);
       };
