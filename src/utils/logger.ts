@@ -194,6 +194,11 @@ class Logger {
     return sanitized;
   }
 
+  // Whether VERBOSE logging is active — used by middleware to decide body capture
+  isVerbose(): boolean {
+    return this.level >= LogLevel.VERBOSE;
+  }
+
   // Log every HTTP request arriving at the Express server
   httpRequest(
     method: string,
@@ -206,18 +211,33 @@ class Logger {
   ): void {
     const sessionPart = sessionId ? ` [Session: ${sessionId}]` : '';
     const agentPart = userAgent ? ` | UA: ${userAgent}` : '';
-    this.debug(`[HTTP] ${method} ${path} from ${ip}${sessionPart}${agentPart}`);
+    // Extract JSON-RPC method for /mcp requests so the INFO line is self-descriptive
+    const mcpMethod = (path === '/mcp' && body?.method) ? ` (${String(body.method)})` : '';
+    this.info(`[HTTP] ${method} ${path}${mcpMethod} from ${ip}${sessionPart}${agentPart}`);
     if (headers && this.level >= LogLevel.VERBOSE) {
       this.verbose(`[HTTP] Request headers: ${JSON.stringify(this.sanitizeHeaders(headers))}`);
     }
     if (body !== undefined && this.level >= LogLevel.VERBOSE) {
-      this.verbose('[HTTP] Request body:', this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000));
+      this.verbose(`[HTTP] Request body: ${this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000)}`);
     }
   }
 
   // Log every HTTP response (called from res.on('finish'))
-  httpResponse(method: string, path: string, statusCode: number, duration: number): void {
+  httpResponse(
+    method: string,
+    path: string,
+    statusCode: number,
+    duration: number,
+    responseHeaders?: Record<string, number | string | string[] | undefined>,
+    responseBody?: string
+  ): void {
     this.debug(`[HTTP] ${method} ${path} → ${statusCode} (${duration}ms)`);
+    if (responseHeaders && this.level >= LogLevel.VERBOSE) {
+      this.verbose(`[HTTP] Response headers: ${JSON.stringify(responseHeaders)}`);
+    }
+    if (responseBody !== undefined && this.level >= LogLevel.VERBOSE) {
+      this.verbose(`[HTTP] Response body: ${this.truncate(responseBody, 500)}`);
+    }
   }
 }
 

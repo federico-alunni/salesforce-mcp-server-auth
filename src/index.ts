@@ -459,8 +459,8 @@ async function runStreamableHTTPServer(port: number) {
   app.use(express.json());
 
   // Universal request logging — runs before every route handler, including
-  // unauthenticated and non-existent routes. Logs arrival at DEBUG and
-  // response status+duration via res.on('finish').
+  // unauthenticated and non-existent routes. Logs arrival at INFO and
+  // response status (DEBUG), headers and body (VERBOSE) via res.on('finish').
   app.use((req, res, next) => {
     const startTime = Date.now();
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
@@ -473,8 +473,37 @@ async function runStreamableHTTPServer(port: number) {
       req.headers as Record<string, string | string[] | undefined>,
       req.body
     );
+
+    // At VERBOSE level intercept write/end to capture the response body.
+    // Capped at 10 chunks to avoid buffering large streaming responses.
+    const bodyChunks: Buffer[] = [];
+    if (logger.isVerbose()) {
+      const originalWrite = res.write.bind(res);
+      const originalEnd = res.end.bind(res);
+      (res as any).write = (chunk: any, ...args: any[]) => {
+        if (chunk && bodyChunks.length < 10) {
+          try { bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); } catch { /* ignore */ }
+        }
+        return (originalWrite as any)(chunk, ...args);
+      };
+      (res as any).end = (chunk?: any, ...args: any[]) => {
+        if (chunk && typeof chunk !== 'function' && bodyChunks.length < 10) {
+          try { bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))); } catch { /* ignore */ }
+        }
+        return (originalEnd as any)(chunk, ...args);
+      };
+    }
+
     res.on('finish', () => {
-      logger.httpResponse(req.method, req.path, res.statusCode, Date.now() - startTime);
+      const responseBody = logger.isVerbose() ? Buffer.concat(bodyChunks).toString('utf8') : undefined;
+      logger.httpResponse(
+        req.method,
+        req.path,
+        res.statusCode,
+        Date.now() - startTime,
+        res.getHeaders() as Record<string, number | string | string[] | undefined>,
+        responseBody
+      );
     });
     next();
   });
