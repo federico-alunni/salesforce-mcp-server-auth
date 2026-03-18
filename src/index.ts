@@ -443,6 +443,10 @@ const _callToolHandler = async (request: CallToolRequest) => {
         // Throw so the MCP SDK does not attempt to write its own response.
         // The client already has the 401; any "headers already sent" noise is harmless.
         throw new Error('__INVALID_SESSION_401_SENT__');
+      } else {
+        // SSE stream already started — headers are sent, HTTP 401 is no longer possible.
+        // Log so we know this path is taken and can diagnose token refresh failures.
+        logger.warn(`[INVALID_SESSION] headers already sent (SSE stream active) for ${toolName} — cannot return HTTP 401; token refresh will not be triggered automatically`);
       }
     }
 

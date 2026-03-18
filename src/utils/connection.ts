@@ -114,7 +114,7 @@ function parseInstanceUrl(body: string): string {
  *
  * Results are cached by SHA-256(token) for MCP_CONNECTION_CACHE_TTL ms.
  */
-async function discoverInstanceUrl(accessToken: string): Promise<string> {
+export async function discoverInstanceUrl(accessToken: string): Promise<string> {
   cleanExpiredEntries();
 
   const cacheKey = hashToken(accessToken);
