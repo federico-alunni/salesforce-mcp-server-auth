@@ -13,7 +13,7 @@ import express from "express";
 import { AsyncLocalStorage } from "async_hooks";
 import { randomUUID } from "crypto";
 
-import { getConnectionForRequest } from "./utils/connection.js";
+import { getConnectionForRequest, discoverInstanceUrl } from "./utils/connection.js";
 import { logger } from "./utils/logger.js";
 import { classifySalesforceError, formatClassifiedError, SalesforceErrorType } from "./utils/errorHandler.js";
 import { RequestContext } from "./types/connection.js";
@@ -725,6 +725,25 @@ async function runStreamableHTTPServer(port: number) {
           id: req.body?.id ?? null,
         });
         return;
+      }
+
+      // Pre-flight: for tools/call requests, validate the Salesforce token before
+      // the MCP transport writes SSE headers (HTTP 200 + text/event-stream).
+      // Once SSE headers are sent we can no longer return HTTP 401, so this is
+      // the only place where we can trigger Claude.ai's token-refresh flow.
+      if (req.body?.method === 'tools/call') {
+        const token = (req.headers['authorization'] as string).slice(7);
+        try {
+          await discoverInstanceUrl(token);
+        } catch (preflight) {
+          const classified = classifySalesforceError(preflight);
+          if (classified.type === SalesforceErrorType.INVALID_SESSION) {
+            logger.warn('[INVALID_SESSION] Pre-flight token validation failed — returning HTTP 401 before SSE stream starts');
+            send401(res);
+            return;
+          }
+          throw preflight;
+        }
       }
 
       // Store headers in AsyncLocalStorage for access in tool handlers
