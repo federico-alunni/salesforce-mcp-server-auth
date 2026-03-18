@@ -75,9 +75,11 @@ async function tryUserinfo(loginOrigin: string, accessToken: string): Promise<st
           } else if (res.statusCode === 401 || res.statusCode === 403 ||
                      (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400)) {
             // 401/403 = token rejected by this endpoint; 3xx = wrong host (e.g. Lightning URL)
-            // In both cases: signal "try next candidate" rather than failing hard.
+            // Log the response body so we can diagnose the exact Salesforce error.
+            logger.debug(`Userinfo at ${loginOrigin} → HTTP ${res.statusCode} body: ${data.slice(0, 500)}`);
             resolve(null);
           } else {
+            logger.debug(`Userinfo at ${loginOrigin} → HTTP ${res.statusCode} body: ${data.slice(0, 500)}`);
             reject(new Error(`Userinfo at ${loginOrigin} failed (HTTP ${res.statusCode})`));
           }
         });
