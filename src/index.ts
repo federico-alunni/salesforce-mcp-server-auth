@@ -715,9 +715,9 @@ async function runStreamableHTTPServer(port: number) {
         await sessionServer.connect(transport);
       } else {
         logger.warn('Rejecting non-initialize request without valid session ID');
-        res.status(400).json({
+        res.status(404).json({
           jsonrpc: '2.0',
-          error: { code: -32000, message: 'Bad Request: No valid session ID provided' },
+          error: { code: -32001, message: 'Session not found' },
           id: req.body?.id ?? null,
         });
         return;
@@ -750,8 +750,8 @@ async function runStreamableHTTPServer(port: number) {
     logger.verbose('Received GET request for server-to-client notifications');
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
     if (!sessionId || !transports[sessionId]) {
-      logger.warn(`Invalid or missing session ID for GET request: ${sessionId}`);
-      res.status(400).send('Invalid or missing session ID');
+      logger.warn(`Session not found for GET request: ${sessionId}`);
+      res.status(404).send('Session not found');
       return;
     }
     
