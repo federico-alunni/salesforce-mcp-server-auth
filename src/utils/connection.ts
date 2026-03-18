@@ -40,15 +40,74 @@ function cleanExpiredEntries(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Calls the Salesforce userinfo endpoint using the supplied Bearer token and
- * returns the instance URL for that org.
+ * Salesforce access tokens have the form `00Dxxxxxxxxx!sessionId`.
+ * Extract the org ID prefix for logging — never used as a secret.
+ */
+function extractOrgId(token: string): string {
+  const match = token.match(/^(00D[a-zA-Z0-9]{9,15})!/);
+  return match ? match[1] : '(unknown)';
+}
+
+/**
+ * Attempt a single userinfo call against the given login origin.
+ * Returns the raw response body on HTTP 200, or null on 401/403
+ * (so the caller can try the next candidate), or throws on other errors.
+ */
+async function tryUserinfo(loginOrigin: string, accessToken: string): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const url = new URL('/services/oauth2/userinfo', loginOrigin);
+    const req = https.request(
+      {
+        method: 'GET',
+        hostname: url.hostname,
+        path: url.pathname,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk: string) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode === 200) {
+            resolve(data);
+          } else if (res.statusCode === 401 || res.statusCode === 403) {
+            resolve(null); // signal: try next candidate
+          } else {
+            reject(new Error(`Userinfo at ${loginOrigin} failed (HTTP ${res.statusCode})`));
+          }
+        });
+      }
+    );
+    req.on('error', (e: Error) => reject(new Error(`Userinfo request error: ${e.message}`)));
+    req.end();
+  });
+}
+
+/**
+ * Parse an instance URL out of a Salesforce userinfo JSON body.
+ */
+function parseInstanceUrl(body: string): string {
+  const json = JSON.parse(body);
+  // `profile` takes the form https://<instance>.salesforce.com/id/...
+  if (json.profile) return new URL(json.profile as string).origin;
+  // Fallback: REST URL template
+  if (json.urls?.rest) return new URL((json.urls.rest as string).replace('{version}', '')).origin;
+  throw new Error('Salesforce userinfo response did not contain a usable instance URL field.');
+}
+
+/**
+ * Discover the Salesforce instance URL for the given access token.
  *
- * The login URL defaults to `https://login.salesforce.com` but can be
- * overridden with the `SALESFORCE_LOGIN_URL` env var (e.g. to point at
- * `https://test.salesforce.com` for sandbox orgs).
+ * Strategy (no configuration needed for multi-org support):
+ *   1. If SALESFORCE_LOGIN_URL is set, use only that origin (explicit override).
+ *   2. Otherwise try login.salesforce.com  → covers all production orgs.
+ *   3. On 401/403 fall back to test.salesforce.com → covers sandbox orgs.
+ *   4. If both fail the org likely has "Prevent Login from login.salesforce.com"
+ *      enabled; the error message explains what to do.
  *
- * Results are cached by SHA-256(token) for `INSTANCE_URL_CACHE_TTL` ms to
- * avoid hitting the userinfo endpoint on every single tool call.
+ * Results are cached by SHA-256(token) for MCP_CONNECTION_CACHE_TTL ms.
  */
 async function discoverInstanceUrl(accessToken: string): Promise<string> {
   cleanExpiredEntries();
@@ -60,62 +119,45 @@ async function discoverInstanceUrl(accessToken: string): Promise<string> {
     return cached.instanceUrl;
   }
 
-  const loginUrl = process.env.SALESFORCE_LOGIN_URL || 'https://login.salesforce.com';
-  const userinfoUrl = new URL('/services/oauth2/userinfo', loginUrl);
+  const orgId = extractOrgId(accessToken);
 
-  logger.salesforceCall('Discover instance URL via userinfo', { loginUrl: userinfoUrl.origin });
+  // If an explicit login URL is configured, use it exclusively (single-org override).
+  const explicitLoginUrl = process.env.SALESFORCE_LOGIN_URL;
+  const candidates = explicitLoginUrl
+    ? [explicitLoginUrl]
+    : ['https://login.salesforce.com', 'https://test.salesforce.com'];
 
-  const body = await new Promise<string>((resolve, reject) => {
-    const req = https.request(
-      {
-        method: 'GET',
-        hostname: userinfoUrl.hostname,
-        path: userinfoUrl.pathname,
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          Accept: 'application/json',
-        },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk: string) => { data += chunk; });
-        res.on('end', () => {
-          if (res.statusCode !== 200) {
-            reject(new Error(
-              `Salesforce userinfo request failed (HTTP ${res.statusCode}). ` +
-              `Verify that the access token is valid and not expired.`
-            ));
-          } else {
-            resolve(data);
-          }
-        });
-      }
-    );
-    req.on('error', (e: Error) => reject(new Error(`Userinfo request error: ${e.message}`)));
-    req.end();
-  });
+  let instanceUrl: string | undefined;
 
-  let instanceUrl: string;
-  try {
-    const json = JSON.parse(body);
-    // `profile` is always present and takes the form https://<instance>.salesforce.com/id/...
-    // We extract just the origin (scheme + host) as the instance URL.
-    if (json.profile) {
-      instanceUrl = new URL(json.profile as string).origin;
-    } else if (json.urls?.rest) {
-      // Fallback: derive from the REST URL template
-      instanceUrl = new URL((json.urls.rest as string).replace('{version}', '')).origin;
-    } else {
-      throw new Error('Salesforce userinfo response did not contain a usable instance URL field.');
+  for (const candidate of candidates) {
+    logger.salesforceCall('Discover instance URL via userinfo', { loginUrl: candidate, orgId });
+    const body = await tryUserinfo(candidate, accessToken);
+    if (body === null) {
+      logger.debug(`Userinfo at ${candidate} returned 401/403 for org ${orgId}, trying next candidate`);
+      continue;
     }
-  } catch (e: unknown) {
+    try {
+      instanceUrl = parseInstanceUrl(body);
+    } catch (e: unknown) {
+      throw new Error(
+        `Failed to parse Salesforce userinfo response from ${candidate}: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+    logger.debug(`Discovered instance URL for org ${orgId} via ${candidate}: ${instanceUrl}`);
+    break;
+  }
+
+  if (!instanceUrl) {
     throw new Error(
-      `Failed to parse Salesforce userinfo response: ${e instanceof Error ? e.message : String(e)}`
+      `Unable to discover Salesforce instance URL for org ${orgId}. ` +
+      `Both login.salesforce.com and test.salesforce.com returned 401/403. ` +
+      `Your org may have "Prevent Login from login.salesforce.com" enabled in ` +
+      `Setup → Security → Session Settings. ` +
+      `Set the SALESFORCE_LOGIN_URL environment variable to your org's My Domain URL to resolve this.`
     );
   }
 
   instanceUrlCache.set(cacheKey, { instanceUrl, expiresAt: Date.now() + INSTANCE_URL_CACHE_TTL });
-  logger.debug(`Discovered and cached instance URL: ${instanceUrl}`);
   return instanceUrl;
 }
 
