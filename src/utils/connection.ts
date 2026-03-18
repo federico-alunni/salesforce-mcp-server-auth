@@ -72,8 +72,11 @@ async function tryUserinfo(loginOrigin: string, accessToken: string): Promise<st
         res.on('end', () => {
           if (res.statusCode === 200) {
             resolve(data);
-          } else if (res.statusCode === 401 || res.statusCode === 403) {
-            resolve(null); // signal: try next candidate
+          } else if (res.statusCode === 401 || res.statusCode === 403 ||
+                     (res.statusCode !== undefined && res.statusCode >= 300 && res.statusCode < 400)) {
+            // 401/403 = token rejected by this endpoint; 3xx = wrong host (e.g. Lightning URL)
+            // In both cases: signal "try next candidate" rather than failing hard.
+            resolve(null);
           } else {
             reject(new Error(`Userinfo at ${loginOrigin} failed (HTTP ${res.statusCode})`));
           }
@@ -128,12 +131,14 @@ async function discoverInstanceUrl(accessToken: string): Promise<string> {
     : ['https://login.salesforce.com', 'https://test.salesforce.com'];
 
   let instanceUrl: string | undefined;
+  const tried: string[] = [];
 
   for (const candidate of candidates) {
     logger.salesforceCall('Discover instance URL via userinfo', { loginUrl: candidate, orgId });
     const body = await tryUserinfo(candidate, accessToken);
     if (body === null) {
-      logger.debug(`Userinfo at ${candidate} returned 401/403 for org ${orgId}, trying next candidate`);
+      tried.push(candidate);
+      logger.debug(`Userinfo at ${candidate} rejected token for org ${orgId} — trying next candidate`);
       continue;
     }
     try {
@@ -148,12 +153,13 @@ async function discoverInstanceUrl(accessToken: string): Promise<string> {
   }
 
   if (!instanceUrl) {
+    const triedList = tried.join(', ');
+    const hint = explicitLoginUrl
+      ? `SALESFORCE_LOGIN_URL is set to ${explicitLoginUrl} — verify the URL is correct and that the Connected App has the "id" scope enabled.`
+      : `Set the SALESFORCE_LOGIN_URL environment variable to your org's My Domain URL, or enable "Allow Login from login.salesforce.com" in Setup → Security → Session Settings.`;
     throw new Error(
       `Unable to discover Salesforce instance URL for org ${orgId}. ` +
-      `Both login.salesforce.com and test.salesforce.com returned 401/403. ` +
-      `Your org may have "Prevent Login from login.salesforce.com" enabled in ` +
-      `Setup → Security → Session Settings. ` +
-      `Set the SALESFORCE_LOGIN_URL environment variable to your org's My Domain URL to resolve this.`
+      `All candidates returned 401/403/3xx: [${triedList}]. ${hint}`
     );
   }
 
