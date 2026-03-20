@@ -72,6 +72,13 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
       if (typeof value === 'string') body.set(key, value);
     }
 
+    // Log params for debugging (redact sensitive values)
+    const debugParams: Record<string, string> = {};
+    for (const [key, value] of body.entries()) {
+      debugParams[key] = (key === 'client_secret' || key === 'code') ? '***' : value;
+    }
+    logger.info(`Token proxy: forwarding params: ${JSON.stringify(debugParams)}`);
+
     const upstream = await fetch(salesforceTokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -79,7 +86,7 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     });
 
     const responseText = await upstream.text();
-    logger.debug(`Token proxy: upstream responded ${upstream.status}`);
+    logger.info(`Token proxy: upstream responded ${upstream.status}: ${responseText.slice(0, 500)}`);
 
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
