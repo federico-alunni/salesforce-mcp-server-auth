@@ -40,7 +40,15 @@ const oauthMetadataHandler = (_req: express.Request, res: express.Response) => {
 
 const authServerMetadataHandler = async (_req: express.Request, res: express.Response) => {
   try {
-    const metadata = await fetchAuthServerMetadata();
+    const metadata = await fetchAuthServerMetadata() as Record<string, unknown>;
+    // Salesforce supports PKCE S256 but may not advertise it in discovery metadata.
+    // Patch the field so MCP clients (e.g. MCP Inspector) can verify compatibility.
+    const existing = Array.isArray(metadata['code_challenge_methods_supported'])
+      ? metadata['code_challenge_methods_supported'] as string[]
+      : [];
+    if (!existing.includes('S256')) {
+      metadata['code_challenge_methods_supported'] = [...existing, 'S256'];
+    }
     res.set('Access-Control-Allow-Origin', '*');
     res.json(metadata);
   } catch (error) {
