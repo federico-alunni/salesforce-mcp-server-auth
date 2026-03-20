@@ -8,6 +8,7 @@ import { registerMCPRoutes } from "./routes/mcp.js";
 function createApp(): express.Application {
   const app = express();
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
 
   // Universal request logging — runs before every route handler
   app.use((req, res, next) => {

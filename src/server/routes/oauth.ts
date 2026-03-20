@@ -49,11 +49,45 @@ const authServerMetadataHandler = async (_req: express.Request, res: express.Res
     if (!existing.includes('S256')) {
       metadata['code_challenge_methods_supported'] = [...existing, 'S256'];
     }
+    // Override token_endpoint to point to this server's proxy so browser-based
+    // MCP clients are not blocked by Salesforce's missing CORS headers on the
+    // real token endpoint.
+    metadata['token_endpoint'] = `${serverUrl}/oauth/token`;
     res.set('Access-Control-Allow-Origin', '*');
     res.json(metadata);
   } catch (error) {
     logger.error('Failed to fetch authorization server metadata:', error);
     res.redirect(302, `${salesforceLoginUrl}/.well-known/openid-configuration`);
+  }
+};
+
+const tokenProxyHandler = async (req: express.Request, res: express.Response) => {
+  try {
+    const salesforceTokenUrl = `${salesforceLoginUrl}/services/oauth2/token`;
+    logger.debug(`Token proxy: forwarding POST to ${salesforceTokenUrl}`);
+
+    // Forward all body params as-is (grant_type, code, redirect_uri, client_id, code_verifier, etc.)
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(req.body as Record<string, string>)) {
+      if (typeof value === 'string') body.set(key, value);
+    }
+
+    const upstream = await fetch(salesforceTokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+
+    const responseText = await upstream.text();
+    logger.debug(`Token proxy: upstream responded ${upstream.status}`);
+
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.status(upstream.status).type('application/json').send(responseText);
+  } catch (error) {
+    logger.error('Token proxy error:', error);
+    res.set('Access-Control-Allow-Origin', '*');
+    res.status(502).json({ error: 'token_proxy_error', error_description: String(error) });
   }
 };
 
@@ -76,4 +110,14 @@ export function registerOAuthRoutes(app: express.Application): void {
   app.get('/.well-known/oauth-authorization-server/mcp', authServerMetadataHandler);
   app.options('/.well-known/openid-configuration', corsPreflight);
   app.get('/.well-known/openid-configuration', authServerMetadataHandler);
+
+  // Token endpoint proxy — forwards browser token requests to Salesforce server-side
+  // (Salesforce does not serve CORS headers on its token endpoint)
+  app.options('/oauth/token', (_req, res) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.status(204).end();
+  });
+  app.post('/oauth/token', tokenProxyHandler);
 }
