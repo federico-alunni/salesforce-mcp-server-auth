@@ -8,7 +8,12 @@ import { registerMCPRoutes } from "./routes/mcp.js";
 function createApp(): express.Application {
   const app = express();
   app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
+  app.use(express.urlencoded({
+    extended: false,
+    // Preserve raw body so the token proxy can forward it verbatim without
+    // any re-encoding that could mangle characters like '~'.
+    verify: (req: any, _res, buf) => { req.rawBody = buf.toString('utf8'); },
+  }));
 
   // Global CORS — required for browser-based MCP clients (e.g. MCP Inspector)
   app.use((req, res, next) => {
