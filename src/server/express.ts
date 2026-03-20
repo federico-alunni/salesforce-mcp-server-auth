@@ -14,7 +14,7 @@ function createApp(): express.Application {
   app.use((req, res, next) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
-    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Last-Event-Id');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Last-Event-Id, Mcp-Protocol-Version');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
