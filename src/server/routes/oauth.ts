@@ -32,7 +32,7 @@ const oauthMetadataHandler = (_req: express.Request, res: express.Response) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.json({
     resource: serverUrl,
-    authorization_servers: [salesforceLoginUrl],
+    authorization_servers: [serverUrl],
     scopes_supported: oauthScopes.split(' '),
     bearer_methods_supported: ['header'],
   });
