@@ -10,6 +10,17 @@ function createApp(): express.Application {
   app.use(express.json());
   app.use(express.urlencoded({ extended: false }));
 
+  // Global CORS — required for browser-based MCP clients (e.g. MCP Inspector)
+  app.use((_req, res, next) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE');
+    res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, Mcp-Session-Id, Last-Event-Id');
+    next();
+  });
+  app.options('*', (_req, res) => {
+    res.status(204).end();
+  });
+
   // Universal request logging — runs before every route handler
   app.use((req, res, next) => {
     const startTime = Date.now();
