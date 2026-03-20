@@ -66,9 +66,14 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     const salesforceTokenUrl = `${salesforceLoginUrl}/services/oauth2/token`;
     logger.debug(`Token proxy: forwarding POST to ${salesforceTokenUrl}`);
 
-    // Forward the raw body verbatim — avoids any re-encoding that could mangle
-    // characters like '~' (URLSearchParams encodes it as %7E, breaking PKCE).
-    const rawBody: string = (req as any).rawBody ?? '';
+    // The browser's URLSearchParams encodes '~' as '%7E' per WHATWG spec, but
+    // Salesforce doesn't decode it back before PKCE verification, causing
+    // "invalid code verifier". Fix: decode %7E→~ in code_verifier before forwarding.
+    let rawBody: string = (req as any).rawBody ?? '';
+    rawBody = rawBody.replace(
+      /(code_verifier=)([^&]*)/i,
+      (_match, prefix, value) => prefix + value.replace(/%7E/gi, '~')
+    );
 
     // Log params for debugging using the parsed body (redact sensitive values)
     const debugParams: Record<string, string> = Object.fromEntries(
