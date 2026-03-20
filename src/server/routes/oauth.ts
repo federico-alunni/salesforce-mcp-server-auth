@@ -70,10 +70,13 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     // Salesforce doesn't decode it back before PKCE verification, causing
     // "invalid code verifier". Fix: decode %7E→~ in code_verifier before forwarding.
     let rawBody: string = (req as any).rawBody ?? '';
+    const rawBefore = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
     rawBody = rawBody.replace(
       /(code_verifier=)([^&]*)/i,
       (_match, prefix, value) => prefix + value.replace(/%7E/gi, '~')
     );
+    const rawAfter = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
+    logger.info(`Token proxy: code_verifier raw before=${rawBefore} after=${rawAfter}`);
 
     // Log params for debugging using the parsed body (redact sensitive values)
     const debugParams: Record<string, string> = Object.fromEntries(
