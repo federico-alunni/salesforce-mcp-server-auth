@@ -137,13 +137,6 @@ class Logger {
     return str.substring(0, maxLength) + `... (truncated ${str.length - maxLength} chars)`;
   }
 
-  // Log user operations without exposing sensitive tokens
-  userOperation(operation: string, username?: string, userId?: string, toolName?: string): void {
-    const userInfo = username || userId || 'unknown-user';
-    const context = toolName ? ` via ${toolName}` : '';
-    this.info(`User operation: ${operation} by ${userInfo}${context}`);
-  }
-
   // Mask access token for safe logging
   maskToken(token: string): string {
     if (!token || token.length < 12) return '***MASKED***';
