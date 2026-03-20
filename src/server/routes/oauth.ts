@@ -67,22 +67,25 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     logger.debug(`Token proxy: forwarding POST to ${salesforceTokenUrl}`);
 
     // Forward all body params as-is (grant_type, code, redirect_uri, client_id, code_verifier, etc.)
-    const body = new URLSearchParams();
-    for (const [key, value] of Object.entries(req.body as Record<string, string>)) {
-      if (typeof value === 'string') body.set(key, value);
-    }
+    // Use encodeURIComponent (not URLSearchParams) to avoid encoding '~' as '%7E' —
+    // URLSearchParams encodes '~' but encodeURIComponent does not, and Salesforce's
+    // PKCE verifier check is sensitive to this difference.
+    const bodyEntries = Object.entries(req.body as Record<string, string>)
+      .filter(([, value]) => typeof value === 'string');
+    const bodyString = bodyEntries
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+      .join('&');
 
     // Log params for debugging (redact sensitive values)
-    const debugParams: Record<string, string> = {};
-    for (const [key, value] of body.entries()) {
-      debugParams[key] = (key === 'client_secret' || key === 'code') ? '***' : value;
-    }
+    const debugParams: Record<string, string> = Object.fromEntries(
+      bodyEntries.map(([key, value]) => [key, (key === 'client_secret' || key === 'code') ? '***' : value])
+    );
     logger.info(`Token proxy: forwarding params: ${JSON.stringify(debugParams)}`);
 
     const upstream = await fetch(salesforceTokenUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
+      body: bodyString,
     });
 
     const responseText = await upstream.text();
