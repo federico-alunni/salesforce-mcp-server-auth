@@ -86,8 +86,6 @@ const authorizeProxyHandler = (req: express.Request, res: express.Response) => {
   );
   const sfAuthorizeUrl = `${salesforceLoginUrl}/services/oauth2/authorize`;
   const params = new URLSearchParams(req.query as Record<string, string>);
-  // Salesforce does not support RFC 8707 resource indicators; strip before forwarding.
-  params.delete('resource');
   res.redirect(302, `${sfAuthorizeUrl}?${params.toString()}`);
 };
 
