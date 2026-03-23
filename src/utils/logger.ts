@@ -2,6 +2,11 @@
  * Logger utility for MCP Server debugging
  */
 
+// High-precision timestamp anchor: record wall-clock ms and hrtime ns at startup
+// so every log line can be stamped with microsecond precision.
+const EPOCH_MS = Date.now();
+const HRTIME_START = process.hrtime.bigint();
+
 export enum LogLevel {
   ERROR = 0,
   WARN = 1,
@@ -40,8 +45,13 @@ class Logger {
 
   private getTimestamp(): string {
     if (!this.enableTimestamps) return '';
-    const now = new Date();
-    return `[${now.toISOString()}] `;
+    // Compute microseconds elapsed since startup anchor
+    const elapsedNs = process.hrtime.bigint() - HRTIME_START;
+    const totalMs = BigInt(EPOCH_MS) + elapsedNs / 1000000n;
+    const subMsUs = Number((elapsedNs / 1000n) % 1000n); // microseconds within the current ms
+    const iso = new Date(Number(totalMs)).toISOString(); // e.g. "2026-03-23T11:13:40.861Z"
+    // Replace trailing 'Z' with 3 extra digits (microseconds) → 6 decimal places total
+    return `[${iso.slice(0, -1)}${String(subMsUs).padStart(3, '0')}Z] `;
   }
 
   private formatMessage(level: string, message: string, data?: any): string {
