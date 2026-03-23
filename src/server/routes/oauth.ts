@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import express from "express";
 import { serverUrl, oauthScopes, salesforceLoginUrl, oauthAliases, authServerMetadataCacheTTL } from "../../config.js";
 import { logger } from "../../utils/logger.js";
@@ -53,12 +54,38 @@ const authServerMetadataHandler = async (_req: express.Request, res: express.Res
     // MCP clients are not blocked by Salesforce's missing CORS headers on the
     // real token endpoint.
     metadata['token_endpoint'] = `${serverUrl}/oauth/token`;
+    // Override authorization_endpoint so all authorize requests are routed
+    // through this server's logging proxy before being forwarded to Salesforce.
+    // This lets us capture code_challenge / code_challenge_method and
+    // cross-check them against the code_verifier that arrives at /oauth/token.
+    metadata['authorization_endpoint'] = `${serverUrl}/oauth/authorize`;
     res.set('Access-Control-Allow-Origin', '*');
     res.json(metadata);
   } catch (error) {
     logger.error('Failed to fetch authorization server metadata:', error);
     res.redirect(302, `${salesforceLoginUrl}/.well-known/openid-configuration`);
   }
+};
+
+/**
+ * Proxy the authorize request to Salesforce after logging all PKCE parameters.
+ * By overriding authorization_endpoint in the metadata we route through here so we can
+ * capture code_challenge / code_challenge_method and cross-check against the verifier
+ * that arrives later at the token endpoint.
+ */
+const authorizeProxyHandler = (req: express.Request, res: express.Response) => {
+  const q = req.query as Record<string, string | undefined>;
+  logger.info(
+    `[OAUTH] Authorize request: client_id=${q['client_id']} ` +
+    `response_type=${q['response_type']} ` +
+    `code_challenge_method=${q['code_challenge_method']} ` +
+    `code_challenge=${q['code_challenge']} ` +
+    `state=${q['state']} ` +
+    `redirect_uri=${q['redirect_uri']}`
+  );
+  const sfAuthorizeUrl = `${salesforceLoginUrl}/services/oauth2/authorize`;
+  const params = new URLSearchParams(req.query as Record<string, string>);
+  res.redirect(302, `${sfAuthorizeUrl}?${params.toString()}`);
 };
 
 const tokenProxyHandler = async (req: express.Request, res: express.Response) => {
@@ -76,7 +103,17 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
       (_match, prefix, value) => prefix + value.replace(/%7E/gi, '~')
     );
     const rawAfter = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
-    logger.info(`Token proxy: code_verifier raw before=${rawBefore} after=${rawAfter}`);
+    // Compute the S256 challenge from the decoded verifier so we can cross-check
+    // against the code_challenge logged in the authorize step.
+    const decodedVerifier = decodeURIComponent(rawAfter);
+    const expectedChallenge = crypto
+      .createHash('sha256')
+      .update(decodedVerifier, 'ascii')
+      .digest('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    logger.info(`Token proxy: code_verifier raw before=${rawBefore} after=${rawAfter} expected_challenge=${expectedChallenge}`);
 
     // Log params for debugging using the parsed body (redact sensitive values)
     const debugParams: Record<string, string> = Object.fromEntries(
@@ -124,6 +161,9 @@ export function registerOAuthRoutes(app: express.Application): void {
   app.get('/.well-known/oauth-authorization-server/mcp', authServerMetadataHandler);
   app.options('/.well-known/openid-configuration', corsPreflight);
   app.get('/.well-known/openid-configuration', authServerMetadataHandler);
+
+  // Authorize proxy — logs PKCE params then redirects to Salesforce
+  app.get('/oauth/authorize', authorizeProxyHandler);
 
   // Token endpoint proxy — forwards browser token requests to Salesforce server-side
   // (Salesforce does not serve CORS headers on its token endpoint)
