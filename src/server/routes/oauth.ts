@@ -81,10 +81,14 @@ const authorizeProxyHandler = (req: express.Request, res: express.Response) => {
     `code_challenge_method=${q['code_challenge_method']} ` +
     `code_challenge=${q['code_challenge']} ` +
     `state=${q['state']} ` +
-    `redirect_uri=${q['redirect_uri']}`
+    `redirect_uri=${q['redirect_uri']} ` +
+    `resource=${q['resource'] ?? '(none)'}`
   );
   const sfAuthorizeUrl = `${salesforceLoginUrl}/services/oauth2/authorize`;
   const params = new URLSearchParams(req.query as Record<string, string>);
+  // Salesforce does not support RFC 8707 resource indicators; strip before forwarding
+  // to avoid unknown-parameter handling that could affect PKCE validation.
+  params.delete('resource');
   res.redirect(302, `${sfAuthorizeUrl}?${params.toString()}`);
 };
 
@@ -97,6 +101,9 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     // Salesforce doesn't decode it back before PKCE verification, causing
     // "invalid code verifier". Fix: decode %7E→~ in code_verifier before forwarding.
     let rawBody: string = (req as any).rawBody ?? '';
+    // Salesforce does not support RFC 8707 resource indicators; strip the parameter
+    // so it does not interfere with PKCE validation on the Salesforce side.
+    rawBody = rawBody.replace(/(?:^|&)resource=[^&]*/gi, (m) => m.startsWith('&') ? '' : '').replace(/^&/, '');
     const rawBefore = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
     rawBody = rawBody.replace(
       /(code_verifier=)([^&]*)/i,
