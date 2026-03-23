@@ -113,7 +113,20 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
-    logger.info(`Token proxy: code_verifier raw before=${rawBefore} after=${rawAfter} expected_challenge=${expectedChallenge}`);
+    // Also compute challenge as-if the verifier had ~ URL-encoded as %7E,
+    // to detect if the client computed the challenge from the encoded form.
+    const urlEncodedVerifier = decodedVerifier.replace(/~/g, '%7E');
+    const challengeFromEncoded = crypto
+      .createHash('sha256')
+      .update(urlEncodedVerifier, 'ascii')
+      .digest('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    logger.info(
+      `Token proxy: code_verifier raw before=${rawBefore} after=${rawAfter} ` +
+      `challenge_from_literal=${expectedChallenge} challenge_from_%7E_encoded=${challengeFromEncoded}`
+    );
 
     // Log params for debugging using the parsed body (redact sensitive values)
     const debugParams: Record<string, string> = Object.fromEntries(
