@@ -97,17 +97,17 @@ const tokenProxyHandler = async (req: express.Request, res: express.Response) =>
     const salesforceTokenUrl = `${salesforceLoginUrl}/services/oauth2/token`;
     logger.debug(`Token proxy: forwarding POST to ${salesforceTokenUrl}`);
 
-    // The browser's URLSearchParams encodes '~' as '%7E' per WHATWG spec, but
-    // Salesforce doesn't decode it back before PKCE verification, causing
-    // "invalid code verifier". Fix: decode %7E→~ in code_verifier before forwarding.
     let rawBody: string = (req as any).rawBody ?? '';
     // Salesforce does not support RFC 8707 resource indicators; strip the parameter
     // so it does not interfere with PKCE validation on the Salesforce side.
     rawBody = rawBody.replace(/(?:^|&)resource=[^&]*/gi, (m) => m.startsWith('&') ? '' : '').replace(/^&/, '');
     const rawBefore = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
+    // Normalize code_verifier: ensure ~ is always percent-encoded as %7E before
+    // forwarding. Some clients (python-httpx) send literal ~; normalising to %7E
+    // avoids Salesforce stripping the character during PKCE hash computation.
     rawBody = rawBody.replace(
       /(code_verifier=)([^&]*)/i,
-      (_match, prefix, value) => prefix + value.replace(/%7E/gi, '~')
+      (_match, prefix, value) => prefix + value.replace(/%7E/gi, '~').replace(/~/g, '%7E')
     );
     const rawAfter = rawBody.match(/(code_verifier=)([^&]*)/i)?.[2] ?? '(not found)';
     // Compute the S256 challenge from the decoded verifier so we can cross-check
