@@ -124,8 +124,8 @@ function createApp(): express.Application {
 }
 
 export async function startServer(): Promise<void> {
-  logger.info('Starting Salesforce MCP Server (Streamable HTTP)...');
-  logger.debug('Configuration:', {
+  logger.info('[SERVER] Starting Salesforce MCP Server (Streamable HTTP)...');
+  logger.debug('[SERVER] Configuration:', {
     transport: 'streamable-http',
     port,
     loginUrl: salesforceLoginUrl,
@@ -134,7 +134,7 @@ export async function startServer(): Promise<void> {
 
   const app = createApp();
   app.listen(port, () => {
-    logger.info(`Salesforce MCP Server running on Streamable HTTP port ${port}`);
-    logger.info(`Connect to: http://localhost:${port}/mcp`);
+    logger.info(`[SERVER] Salesforce MCP Server running on Streamable HTTP port ${port}`);
+    logger.info(`[SERVER] Connect to: http://localhost:${port}/mcp`);
   });
 }

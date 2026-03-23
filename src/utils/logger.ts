@@ -206,12 +206,12 @@ class Logger {
     const agentPart = userAgent ? ` | UA: ${userAgent}` : '';
     // Extract JSON-RPC method for /mcp requests so the INFO line is self-descriptive
     const mcpMethod = (path === '/mcp' && body?.method) ? ` (${String(body.method)})` : '';
-    this.info(`[HTTP] ${method} ${path}${mcpMethod} from ${ip}${sessionPart}${agentPart}`);
+    this.info(`[MIDDLEWARE] ${method} ${path}${mcpMethod} from ${ip}${sessionPart}${agentPart}`);
     if (headers && this.level >= LogLevel.VERBOSE) {
-      this.verbose(`[HTTP] Request headers: ${JSON.stringify(this.sanitizeHeaders(headers))}`);
+      this.verbose(`[MIDDLEWARE] Request headers: ${JSON.stringify(this.sanitizeHeaders(headers))}`);
     }
     if (body !== undefined && this.level >= LogLevel.VERBOSE) {
-      this.verbose(`[HTTP] Request body: ${this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000)}`);
+      this.verbose(`[MIDDLEWARE] Request body: ${this.truncate(typeof body === 'string' ? body : JSON.stringify(body), 1000)}`);
     }
   }
 
@@ -224,12 +224,12 @@ class Logger {
     responseHeaders?: Record<string, number | string | string[] | undefined>,
     responseBody?: string
   ): void {
-    this.debug(`[HTTP] ${method} ${path} → ${statusCode} (${duration}ms)`);
+    this.debug(`[MIDDLEWARE] ${method} ${path} → ${statusCode} (${duration}ms)`);
     if (responseHeaders && this.level >= LogLevel.VERBOSE) {
-      this.verbose(`[HTTP] Response headers: ${JSON.stringify(responseHeaders)}`);
+      this.verbose(`[MIDDLEWARE] Response headers: ${JSON.stringify(responseHeaders)}`);
     }
     if (responseBody !== undefined && this.level >= LogLevel.VERBOSE) {
-      this.verbose(`[HTTP] Response body: ${this.truncate(responseBody, 500)}`);
+      this.verbose(`[MIDDLEWARE] Response body: ${this.truncate(responseBody, 500)}`);
     }
   }
 }
