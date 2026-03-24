@@ -4,9 +4,10 @@
 // Implements:
 //   GET  /.well-known/oauth-protected-resource   → resource metadata (RFC 9728)
 //   GET  /.well-known/oauth-authorization-server  → authorization server metadata
-//   GET  /oauth/authorize                         → authorization endpoint (shows login)
-//   POST /oauth/authorize                         → login form submission
-//   POST /oauth/token                             → token exchange
+//   POST /register                                → dynamic client registration (RFC 7591)
+//   GET  /authorize  (alias: /oauth/authorize)   → authorization endpoint (shows login)
+//   POST /authorize  (alias: /oauth/authorize)   → login form submission
+//   POST /token      (alias: /oauth/token)       → token exchange
 // ============================================================================
 
 import { Router, type Request, type Response } from 'express';
@@ -42,8 +43,8 @@ export function createLocalOAuthRoutes(): Router {
     res.set('Access-Control-Allow-Origin', '*');
     res.json({
       issuer: serverUrl,
-      authorization_endpoint: `${serverUrl}/oauth/authorize`,
-      token_endpoint: `${serverUrl}/oauth/token`,
+      authorization_endpoint: `${serverUrl}/authorize`,
+      token_endpoint: `${serverUrl}/token`,
       registration_endpoint: `${serverUrl}/register`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
@@ -59,7 +60,6 @@ export function createLocalOAuthRoutes(): Router {
 
   // -----------------------------------------------------------------------
   // POST /register — Dynamic Client Registration (RFC 7591)
-  // Accepts any client, generates a client_id. No secret required (PKCE).
   // -----------------------------------------------------------------------
   router.post('/register', (req: Request, res: Response) => {
     res.set('Access-Control-Allow-Origin', '*');
@@ -71,7 +71,6 @@ export function createLocalOAuthRoutes(): Router {
     }
 
     const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-
     logger.info(`Dynamic client registered: ${clientId} (${client_name ?? 'unnamed'})`);
 
     res.status(201).json({
@@ -85,12 +84,10 @@ export function createLocalOAuthRoutes(): Router {
     });
   });
 
-  router.options('/register', corsPreflight);
-
   // -----------------------------------------------------------------------
-  // GET /oauth/authorize — show login page
+  // GET /authorize — show login page
   // -----------------------------------------------------------------------
-  router.get('/oauth/authorize', (req: Request, res: Response) => {
+  const handleAuthorizeGet = (req: Request, res: Response) => {
     const { client_id, redirect_uri, response_type, code_challenge, code_challenge_method, scope, state } = req.query as Record<string, string>;
 
     if (response_type !== 'code') {
@@ -103,13 +100,11 @@ export function createLocalOAuthRoutes(): Router {
       return;
     }
 
-    // Validate client_id if restricted
     if (mcpAuth.allowedClientIds[0] !== '*' && !mcpAuth.allowedClientIds.includes(client_id)) {
       res.status(400).json({ error: 'invalid_client', error_description: 'Unknown client_id' });
       return;
     }
 
-    // Render simple login form
     res.type('html').send(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MCP Server — Login</title>
@@ -124,7 +119,7 @@ export function createLocalOAuthRoutes(): Router {
 <div class="card">
   <h2>MCP Server Login</h2>
   <p>Authenticate to connect your MCP client.</p>
-  <form method="POST" action="/oauth/authorize">
+  <form method="POST" action="/authorize">
     <input type="hidden" name="client_id" value="${escapeHtml(client_id || '')}">
     <input type="hidden" name="redirect_uri" value="${escapeHtml(redirect_uri || '')}">
     <input type="hidden" name="code_challenge" value="${escapeHtml(code_challenge || '')}">
@@ -137,12 +132,12 @@ export function createLocalOAuthRoutes(): Router {
   </form>
   <p class="info">Client: ${escapeHtml(client_id || 'unknown')}</p>
 </div></body></html>`);
-  });
+  };
 
   // -----------------------------------------------------------------------
-  // POST /oauth/authorize — process login, issue authorization code
+  // POST /authorize — process login, issue authorization code
   // -----------------------------------------------------------------------
-  router.post('/oauth/authorize', (req: Request, res: Response) => {
+  const handleAuthorizePost = (req: Request, res: Response) => {
     const { username, client_id, redirect_uri, code_challenge, code_challenge_method, scope, state } = req.body;
 
     if (!username || !client_id || !redirect_uri || !code_challenge) {
@@ -150,13 +145,10 @@ export function createLocalOAuthRoutes(): Router {
       return;
     }
 
-    // Create or find user
     const user = getOrCreateUser(username);
     logger.auditLog('mcp_authorize', user.id, { clientId: client_id });
 
     const scopes = (scope || mcpAuth.oauthScopes).split(' ');
-
-    // Issue authorization code
     const code = generateAuthorizationCode({
       userId: user.id,
       clientId: client_id,
@@ -166,18 +158,17 @@ export function createLocalOAuthRoutes(): Router {
       scopes,
     });
 
-    // Redirect back to client with code
     const redirectUrl = new URL(redirect_uri);
     redirectUrl.searchParams.set('code', code);
     if (state) redirectUrl.searchParams.set('state', state);
 
     res.redirect(302, redirectUrl.toString());
-  });
+  };
 
   // -----------------------------------------------------------------------
-  // POST /oauth/token — exchange code for access token
+  // POST /token — exchange code for access token
   // -----------------------------------------------------------------------
-  router.post('/oauth/token', async (req: Request, res: Response) => {
+  const handleToken = async (req: Request, res: Response) => {
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
@@ -200,7 +191,6 @@ export function createLocalOAuthRoutes(): Router {
     }
 
     const accessToken = await tokenService.generateAccessToken(record.userId, record.scopes);
-
     logger.auditLog('mcp_token_issued', record.userId, { clientId: client_id });
 
     res.json({
@@ -209,14 +199,25 @@ export function createLocalOAuthRoutes(): Router {
       expires_in: (await import('../../../shared/config/index.js')).mcpAuth.accessTokenTTL,
       scope: record.scopes.join(' '),
     });
-  });
+  };
 
-  // CORS preflight for all OAuth endpoints
+  // Register on both /authorize and /oauth/authorize, /token and /oauth/token
+  router.get('/authorize', handleAuthorizeGet);
+  router.get('/oauth/authorize', handleAuthorizeGet);
+  router.post('/authorize', handleAuthorizePost);
+  router.post('/oauth/authorize', handleAuthorizePost);
+  router.post('/token', handleToken);
+  router.post('/oauth/token', handleToken);
+
+  // CORS preflight
   router.options('/.well-known/oauth-protected-resource', corsPreflight);
   router.options('/.well-known/oauth-protected-resource/mcp', corsPreflight);
   router.options('/.well-known/oauth-authorization-server', corsPreflight);
   router.options('/.well-known/oauth-authorization-server/mcp', corsPreflight);
   router.options('/.well-known/openid-configuration', corsPreflight);
+  router.options('/register', corsPreflight);
+  router.options('/authorize', corsPreflight);
+  router.options('/token', corsPreflight);
   router.options('/oauth/token', corsPreflight);
 
   return router;
