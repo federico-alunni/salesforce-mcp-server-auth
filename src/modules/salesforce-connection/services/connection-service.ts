@@ -4,7 +4,7 @@
 //   connect → store tokens → refresh → disconnect
 // ============================================================================
 
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes, createHash } from 'crypto';
 import type {
   ISalesforceConnectionService,
   SalesforceAccessContext,
@@ -19,7 +19,7 @@ import { findOne, upsert, remove } from '../../../shared/storage/file-store.js';
 const COLLECTION = 'salesforce_connections';
 
 // In-memory pending OAuth state → userId mapping (short-lived, for /salesforce/connect flow)
-const pendingStates = new Map<string, { userId: string; redirectUri: string; expiresAt: number }>();
+const pendingStates = new Map<string, { userId: string; redirectUri: string; sfCodeVerifier: string; expiresAt: number }>();
 
 // Pending MCP OAuth params for the combined MCP + Salesforce login flow
 export interface PendingMcpAuthParams {
@@ -29,6 +29,7 @@ export interface PendingMcpAuthParams {
   codeChallengeMethod: string;
   scope: string;
   originalMcpState: string;
+  sfCodeVerifier: string; // PKCE verifier for the Salesforce leg
 }
 const pendingMcpAuth = new Map<string, PendingMcpAuthParams & { expiresAt: number }>();
 
@@ -39,6 +40,13 @@ const accessTokenCache = new Map<string, { accessToken: string; instanceUrl: str
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+function generatePkce(): { codeVerifier: string; codeChallenge: string } {
+  // Use hex encoding: only [0-9a-f] — no ~ or other special characters
+  const codeVerifier = randomBytes(32).toString('hex');
+  const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
+  return { codeVerifier, codeChallenge };
+}
+
 function getConnection(userId: string): SalesforceConnectionRecord | undefined {
   return findOne<SalesforceConnectionRecord>(COLLECTION, r => r.localUserId === userId);
 }
@@ -47,7 +55,7 @@ function saveConnection(record: SalesforceConnectionRecord): void {
   upsert(COLLECTION, record);
 }
 
-async function exchangeCodeForTokens(code: string, redirectUri: string): Promise<{
+async function exchangeCodeForTokens(code: string, redirectUri: string, codeVerifier?: string): Promise<{
   access_token: string;
   refresh_token: string;
   instance_url: string;
@@ -62,6 +70,7 @@ async function exchangeCodeForTokens(code: string, redirectUri: string): Promise
     client_secret: salesforce.clientSecret,
     redirect_uri: redirectUri,
   });
+  if (codeVerifier) params.set('code_verifier', codeVerifier);
 
   const response = await fetch(`${salesforce.loginUrl}/services/oauth2/token`, {
     method: 'POST',
@@ -167,10 +176,10 @@ export const salesforceConnectionService: ISalesforceConnectionService = {
     }
     pendingStates.delete(stateParam);
 
-    const { userId, redirectUri } = pending;
+    const { userId, redirectUri, sfCodeVerifier } = pending;
     logger.auditLog('salesforce_connect_callback', userId);
 
-    const tokens = await exchangeCodeForTokens(code, redirectUri);
+    const tokens = await exchangeCodeForTokens(code, redirectUri, sfCodeVerifier);
     const identity = parseSalesforceIdentityUrl(tokens.id);
 
     const now = Date.now();
@@ -289,9 +298,11 @@ export const salesforceConnectionService: ISalesforceConnectionService = {
 
 export function initiateConnect(userId: string): string {
   const state = randomUUID();
+  const { codeVerifier, codeChallenge } = generatePkce();
   pendingStates.set(state, {
     userId,
     redirectUri: salesforce.callbackUrl,
+    sfCodeVerifier: codeVerifier,
     expiresAt: Date.now() + 600_000, // 10 min
   });
 
@@ -302,6 +313,8 @@ export function initiateConnect(userId: string): string {
     scope: salesforce.scopes,
     state,
     prompt: 'login consent',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   });
 
   return `${salesforce.loginUrl}/services/oauth2/authorize?${params.toString()}`;
@@ -312,9 +325,10 @@ export function initiateConnect(userId: string): string {
 // -----------------------------------------------------------------------
 
 /** Start a combined MCP+SF login. Returns the Salesforce authorize URL. */
-export function initiateSalesforceLoginForMcp(params: PendingMcpAuthParams): string {
+export function initiateSalesforceLoginForMcp(params: Omit<PendingMcpAuthParams, 'sfCodeVerifier'>): string {
   const sfState = randomUUID();
-  pendingMcpAuth.set(sfState, { ...params, expiresAt: Date.now() + 600_000 }); // 10 min
+  const { codeVerifier, codeChallenge } = generatePkce();
+  pendingMcpAuth.set(sfState, { ...params, sfCodeVerifier: codeVerifier, expiresAt: Date.now() + 600_000 }); // 10 min
 
   const sfParams = new URLSearchParams({
     response_type: 'code',
@@ -323,6 +337,8 @@ export function initiateSalesforceLoginForMcp(params: PendingMcpAuthParams): str
     scope: salesforce.scopes,
     state: sfState,
     prompt: 'login consent',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   });
 
   return `${salesforce.loginUrl}/services/oauth2/authorize?${sfParams.toString()}`;
@@ -347,8 +363,8 @@ export interface SalesforceCodeRedemption {
  * Exchange a Salesforce authorization code for tokens without needing a pre-existing local user.
  * Returns a `commit(localUserId)` function to finalize and persist the connection.
  */
-export async function redeemSalesforceCode(sfCode: string): Promise<SalesforceCodeRedemption> {
-  const tokens = await exchangeCodeForTokens(sfCode, salesforce.callbackUrl);
+export async function redeemSalesforceCode(sfCode: string, sfCodeVerifier: string): Promise<SalesforceCodeRedemption> {
+  const tokens = await exchangeCodeForTokens(sfCode, salesforce.callbackUrl, sfCodeVerifier);
   const identity = parseSalesforceIdentityUrl(tokens.id);
 
   return {

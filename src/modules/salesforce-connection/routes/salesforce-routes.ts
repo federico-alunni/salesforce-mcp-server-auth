@@ -94,7 +94,7 @@ export function createSalesforceCallbackRoute(): Router {
     const mcpPending = consumePendingMcpAuth(state);
     if (mcpPending) {
       try {
-        const redemption = await redeemSalesforceCode(code);
+        const redemption = await redeemSalesforceCode(code, mcpPending.sfCodeVerifier);
 
         // Use the Salesforce user ID as a stable local identifier
         const sfIdentifier = redemption.sfUserId || `sforg_${redemption.sfOrgId}`;
