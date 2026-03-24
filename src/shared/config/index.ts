@@ -20,7 +20,7 @@ function envBool(key: string, fallback: boolean): boolean {
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
-export const port = envInt('MCP_SERVER_PORT', 3000);
+export const port = envInt('PORT', envInt('MCP_SERVER_PORT', 3000));
 export const serverUrl = env('MCP_SERVER_URL', 'http://localhost:3000');
 
 // ---------------------------------------------------------------------------
