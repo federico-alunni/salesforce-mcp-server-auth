@@ -44,6 +44,7 @@ export function createLocalOAuthRoutes(): Router {
       issuer: serverUrl,
       authorization_endpoint: `${serverUrl}/oauth/authorize`,
       token_endpoint: `${serverUrl}/oauth/token`,
+      registration_endpoint: `${serverUrl}/register`,
       response_types_supported: ['code'],
       grant_types_supported: ['authorization_code'],
       code_challenge_methods_supported: ['S256', 'plain'],
@@ -55,6 +56,36 @@ export function createLocalOAuthRoutes(): Router {
   router.get('/.well-known/oauth-authorization-server', authServerMetadata);
   router.get('/.well-known/oauth-authorization-server/mcp', authServerMetadata);
   router.get('/.well-known/openid-configuration', authServerMetadata);
+
+  // -----------------------------------------------------------------------
+  // POST /register — Dynamic Client Registration (RFC 7591)
+  // Accepts any client, generates a client_id. No secret required (PKCE).
+  // -----------------------------------------------------------------------
+  router.post('/register', (req: Request, res: Response) => {
+    res.set('Access-Control-Allow-Origin', '*');
+    const { redirect_uris, client_name, grant_types, response_types, token_endpoint_auth_method } = req.body ?? {};
+
+    if (!redirect_uris || !Array.isArray(redirect_uris) || redirect_uris.length === 0) {
+      res.status(400).json({ error: 'invalid_client_metadata', error_description: 'redirect_uris is required' });
+      return;
+    }
+
+    const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    logger.info(`Dynamic client registered: ${clientId} (${client_name ?? 'unnamed'})`);
+
+    res.status(201).json({
+      client_id: clientId,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      redirect_uris,
+      grant_types: grant_types ?? ['authorization_code'],
+      response_types: response_types ?? ['code'],
+      token_endpoint_auth_method: token_endpoint_auth_method ?? 'none',
+      client_name: client_name ?? clientId,
+    });
+  });
+
+  router.options('/register', corsPreflight);
 
   // -----------------------------------------------------------------------
   // GET /oauth/authorize — show login page
