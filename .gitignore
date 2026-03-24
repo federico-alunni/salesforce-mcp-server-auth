@@ -22,3 +22,6 @@ yarn-error.log*
 
 # Local test scripts
 test-scripts
+
+# Data directory (file-based storage)
+.data/
