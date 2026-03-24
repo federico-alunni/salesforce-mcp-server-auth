@@ -4,7 +4,7 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install
+RUN npm install --ignore-scripts
 
 COPY tsconfig.json ./
 COPY src/ ./src/
@@ -18,7 +18,7 @@ WORKDIR /app
 
 # Install only production dependencies
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install --omit=dev --ignore-scripts
 
 # Copy compiled output from builder
 COPY --from=builder /app/dist ./dist
