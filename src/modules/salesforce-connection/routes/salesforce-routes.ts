@@ -10,7 +10,14 @@
 
 import { Router, type Request, type Response } from 'express';
 import { authMiddleware } from '../../mcp-auth/middleware.js';
-import { salesforceConnectionService, initiateConnect } from '../services/connection-service.js';
+import {
+  salesforceConnectionService,
+  initiateConnect,
+  consumePendingMcpAuth,
+  redeemSalesforceCode,
+} from '../services/connection-service.js';
+import { getOrCreateUser } from '../../mcp-auth/services/user-service.js';
+import { generateAuthorizationCode } from '../../mcp-auth/services/auth-code-service.js';
 import { logger } from '../../../shared/logger.js';
 
 export function createSalesforceRoutes(): Router {
@@ -53,6 +60,12 @@ export function createSalesforceRoutes(): Router {
 
 // -----------------------------------------------------------------------
 // Salesforce OAuth callback — does NOT require MCP auth (user is in browser)
+//
+// Handles two flows:
+//  1. Combined MCP + SF login: initiated by GET /authorize, completes the
+//     full OAuth flow and redirects back to the MCP client with an auth code.
+//  2. Account linking: initiated by GET /salesforce/connect (user already
+//     has an MCP token), just stores the SF connection and shows a page.
 // -----------------------------------------------------------------------
 export function createSalesforceCallbackRoute(): Router {
   const router = Router();
@@ -75,6 +88,48 @@ export function createSalesforceCallbackRoute(): Router {
       return;
     }
 
+    // -----------------------------------------------------------------------
+    // Flow 1: Combined MCP + Salesforce login
+    // -----------------------------------------------------------------------
+    const mcpPending = consumePendingMcpAuth(state);
+    if (mcpPending) {
+      try {
+        const redemption = await redeemSalesforceCode(code);
+
+        // Use the Salesforce user ID as a stable local identifier
+        const sfIdentifier = redemption.sfUserId || `sforg_${redemption.sfOrgId}`;
+        const user = getOrCreateUser(`sf_${sfIdentifier}`);
+        redemption.commit(user.id);
+
+        const mcpCode = generateAuthorizationCode({
+          userId: user.id,
+          clientId: mcpPending.clientId,
+          redirectUri: mcpPending.mcpRedirectUri,
+          codeChallenge: mcpPending.codeChallenge,
+          codeChallengeMethod: mcpPending.codeChallengeMethod,
+          scopes: mcpPending.scope.split(' '),
+        });
+
+        const redirectUrl = new URL(mcpPending.mcpRedirectUri);
+        redirectUrl.searchParams.set('code', mcpCode);
+        if (mcpPending.originalMcpState) redirectUrl.searchParams.set('state', mcpPending.originalMcpState);
+
+        logger.auditLog('mcp_salesforce_login', user.id, { clientId: mcpPending.clientId });
+        res.redirect(302, redirectUrl.toString());
+      } catch (err) {
+        logger.error('MCP Salesforce login callback error:', err);
+        res.type('html').send(`<!DOCTYPE html><html><body>
+          <h2>Authentication Failed</h2>
+          <p>${escapeHtml(err instanceof Error ? err.message : String(err))}</p>
+          <p>Please try again.</p>
+        </body></html>`);
+      }
+      return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Flow 2: Account linking (user already has MCP token)
+    // -----------------------------------------------------------------------
     try {
       const connection = await salesforceConnectionService.handleOAuthCallback(state, code);
       res.type('html').send(`<!DOCTYPE html><html><head>

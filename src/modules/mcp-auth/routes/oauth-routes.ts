@@ -5,17 +5,16 @@
 //   GET  /.well-known/oauth-protected-resource   → resource metadata (RFC 9728)
 //   GET  /.well-known/oauth-authorization-server  → authorization server metadata
 //   POST /register                                → dynamic client registration (RFC 7591)
-//   GET  /authorize  (alias: /oauth/authorize)   → authorization endpoint (shows login)
-//   POST /authorize  (alias: /oauth/authorize)   → login form submission
+//   GET  /authorize  (alias: /oauth/authorize)   → redirect to Salesforce login
 //   POST /token      (alias: /oauth/token)       → token exchange
 // ============================================================================
 
 import { Router, type Request, type Response } from 'express';
 import { serverUrl, mcpAuth } from '../../../shared/config/index.js';
 import { logger } from '../../../shared/logger.js';
-import { getOrCreateUser } from '../services/user-service.js';
-import { generateAuthorizationCode, redeemAuthorizationCode } from '../services/auth-code-service.js';
+import { redeemAuthorizationCode } from '../services/auth-code-service.js';
 import { tokenService } from '../services/token-service.js';
+import { initiateSalesforceLoginForMcp } from '../../salesforce-connection/services/connection-service.js';
 
 export function createLocalOAuthRoutes(): Router {
   const router = Router();
@@ -85,7 +84,9 @@ export function createLocalOAuthRoutes(): Router {
   });
 
   // -----------------------------------------------------------------------
-  // GET /authorize — show login page
+  // GET /authorize — redirect to Salesforce login (combined MCP + SF auth)
+  // The user authenticates once via Salesforce; the callback issues both
+  // the SF connection tokens AND the MCP authorization code.
   // -----------------------------------------------------------------------
   const handleAuthorizeGet = (req: Request, res: Response) => {
     const { client_id, redirect_uri, response_type, code_challenge, code_challenge_method, scope, state } = req.query as Record<string, string>;
@@ -100,69 +101,28 @@ export function createLocalOAuthRoutes(): Router {
       return;
     }
 
+    if (!redirect_uri) {
+      res.status(400).json({ error: 'invalid_request', error_description: 'redirect_uri is required' });
+      return;
+    }
+
     if (mcpAuth.allowedClientIds[0] !== '*' && !mcpAuth.allowedClientIds.includes(client_id)) {
       res.status(400).json({ error: 'invalid_client', error_description: 'Unknown client_id' });
       return;
     }
 
-    res.type('html').send(`<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MCP Server — Login</title>
-<style>
-  body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
-  .card{background:#fff;padding:2rem;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.1);max-width:400px;width:100%}
-  h2{margin-top:0;color:#333} label{display:block;margin:1rem 0 .3rem;font-weight:600;color:#555}
-  input{width:100%;padding:.6rem;border:1px solid #ccc;border-radius:4px;font-size:1rem;box-sizing:border-box}
-  button{margin-top:1.2rem;width:100%;padding:.7rem;background:#0066cc;color:#fff;border:none;border-radius:4px;font-size:1rem;cursor:pointer}
-  button:hover{background:#0052a3} .info{font-size:.85rem;color:#777;margin-top:1rem}
-</style></head><body>
-<div class="card">
-  <h2>MCP Server Login</h2>
-  <p>Authenticate to connect your MCP client.</p>
-  <form method="POST" action="/authorize">
-    <input type="hidden" name="client_id" value="${escapeHtml(client_id || '')}">
-    <input type="hidden" name="redirect_uri" value="${escapeHtml(redirect_uri || '')}">
-    <input type="hidden" name="code_challenge" value="${escapeHtml(code_challenge || '')}">
-    <input type="hidden" name="code_challenge_method" value="${escapeHtml(code_challenge_method || 'S256')}">
-    <input type="hidden" name="scope" value="${escapeHtml(scope || mcpAuth.oauthScopes)}">
-    <input type="hidden" name="state" value="${escapeHtml(state || '')}">
-    <label for="username">Username</label>
-    <input id="username" name="username" type="text" required autofocus placeholder="Enter your name or identifier">
-    <button type="submit">Authorize</button>
-  </form>
-  <p class="info">Client: ${escapeHtml(client_id || 'unknown')}</p>
-</div></body></html>`);
-  };
+    logger.info(`MCP authorize → redirecting to Salesforce login for client=${client_id}`);
 
-  // -----------------------------------------------------------------------
-  // POST /authorize — process login, issue authorization code
-  // -----------------------------------------------------------------------
-  const handleAuthorizePost = (req: Request, res: Response) => {
-    const { username, client_id, redirect_uri, code_challenge, code_challenge_method, scope, state } = req.body;
-
-    if (!username || !client_id || !redirect_uri || !code_challenge) {
-      res.status(400).json({ error: 'invalid_request', error_description: 'Missing required parameters' });
-      return;
-    }
-
-    const user = getOrCreateUser(username);
-    logger.auditLog('mcp_authorize', user.id, { clientId: client_id });
-
-    const scopes = (scope || mcpAuth.oauthScopes).split(' ');
-    const code = generateAuthorizationCode({
-      userId: user.id,
+    const sfAuthUrl = initiateSalesforceLoginForMcp({
       clientId: client_id,
-      redirectUri: redirect_uri,
+      mcpRedirectUri: redirect_uri,
       codeChallenge: code_challenge,
       codeChallengeMethod: code_challenge_method || 'S256',
-      scopes,
+      scope: scope || mcpAuth.oauthScopes,
+      originalMcpState: state || '',
     });
 
-    const redirectUrl = new URL(redirect_uri);
-    redirectUrl.searchParams.set('code', code);
-    if (state) redirectUrl.searchParams.set('state', state);
-
-    res.redirect(302, redirectUrl.toString());
+    res.redirect(302, sfAuthUrl);
   };
 
   // -----------------------------------------------------------------------
@@ -204,8 +164,6 @@ export function createLocalOAuthRoutes(): Router {
   // Register on both /authorize and /oauth/authorize, /token and /oauth/token
   router.get('/authorize', handleAuthorizeGet);
   router.get('/oauth/authorize', handleAuthorizeGet);
-  router.post('/authorize', handleAuthorizePost);
-  router.post('/oauth/authorize', handleAuthorizePost);
   router.post('/token', handleToken);
   router.post('/oauth/token', handleToken);
 
@@ -228,8 +186,4 @@ function corsPreflight(_req: Request, res: Response) {
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.status(204).end();
-}
-
-function escapeHtml(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

@@ -94,10 +94,10 @@ describe('Integration — Local Auth Mode', async () => {
     assert.ok(json.code_challenge_methods_supported.includes('S256'));
   });
 
-  it('GET /oauth/authorize should return login page', async () => {
+  it('GET /oauth/authorize should redirect to Salesforce login', async () => {
     const res = await request(server, 'GET', '/oauth/authorize?client_id=test&redirect_uri=http://localhost/cb&response_type=code&code_challenge=abc&code_challenge_method=S256');
-    assert.equal(res.status, 200);
-    assert.ok(res.body.includes('MCP Server Login'));
+    assert.equal(res.status, 302);
+    assert.ok(res.headers['location']?.includes('salesforce.com') || res.headers['location']?.includes('oauth2/authorize'));
   });
 
   it('GET /salesforce/status without auth should return 401', async () => {

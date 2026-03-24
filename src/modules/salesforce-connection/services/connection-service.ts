@@ -18,8 +18,19 @@ import { findOne, upsert, remove } from '../../../shared/storage/file-store.js';
 
 const COLLECTION = 'salesforce_connections';
 
-// In-memory pending OAuth state → userId mapping (short-lived)
+// In-memory pending OAuth state → userId mapping (short-lived, for /salesforce/connect flow)
 const pendingStates = new Map<string, { userId: string; redirectUri: string; expiresAt: number }>();
+
+// Pending MCP OAuth params for the combined MCP + Salesforce login flow
+export interface PendingMcpAuthParams {
+  clientId: string;
+  mcpRedirectUri: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+  scope: string;
+  originalMcpState: string;
+}
+const pendingMcpAuth = new Map<string, PendingMcpAuthParams & { expiresAt: number }>();
 
 // Access token cache (avoid decrypting on every tool call)
 const accessTokenCache = new Map<string, { accessToken: string; instanceUrl: string; expiresAt: number }>();
@@ -296,11 +307,91 @@ export function initiateConnect(userId: string): string {
   return `${salesforce.loginUrl}/services/oauth2/authorize?${params.toString()}`;
 }
 
+// -----------------------------------------------------------------------
+// MCP + Salesforce combined login flow helpers
+// -----------------------------------------------------------------------
+
+/** Start a combined MCP+SF login. Returns the Salesforce authorize URL. */
+export function initiateSalesforceLoginForMcp(params: PendingMcpAuthParams): string {
+  const sfState = randomUUID();
+  pendingMcpAuth.set(sfState, { ...params, expiresAt: Date.now() + 600_000 }); // 10 min
+
+  const sfParams = new URLSearchParams({
+    response_type: 'code',
+    client_id: salesforce.clientId,
+    redirect_uri: salesforce.callbackUrl,
+    scope: salesforce.scopes,
+    state: sfState,
+    prompt: 'login consent',
+  });
+
+  return `${salesforce.loginUrl}/services/oauth2/authorize?${sfParams.toString()}`;
+}
+
+/** Retrieve and delete the pending MCP auth params for a given SF state. */
+export function consumePendingMcpAuth(sfState: string): PendingMcpAuthParams | undefined {
+  const data = pendingMcpAuth.get(sfState);
+  pendingMcpAuth.delete(sfState);
+  if (!data || data.expiresAt < Date.now()) return undefined;
+  const { expiresAt: _exp, ...params } = data;
+  return params;
+}
+
+export interface SalesforceCodeRedemption {
+  sfUserId: string;
+  sfOrgId?: string;
+  commit(localUserId: string): SalesforceConnectionRecord;
+}
+
+/**
+ * Exchange a Salesforce authorization code for tokens without needing a pre-existing local user.
+ * Returns a `commit(localUserId)` function to finalize and persist the connection.
+ */
+export async function redeemSalesforceCode(sfCode: string): Promise<SalesforceCodeRedemption> {
+  const tokens = await exchangeCodeForTokens(sfCode, salesforce.callbackUrl);
+  const identity = parseSalesforceIdentityUrl(tokens.id);
+
+  return {
+    sfUserId: identity.userId || '',
+    sfOrgId: identity.orgId,
+    commit(localUserId: string): SalesforceConnectionRecord {
+      const now = Date.now();
+      const record: SalesforceConnectionRecord = {
+        id: randomUUID(),
+        localUserId,
+        salesforceUserId: identity.userId,
+        salesforceOrgId: identity.orgId,
+        instanceUrl: tokens.instance_url,
+        accessToken: encrypt(tokens.access_token),
+        refreshToken: encrypt(tokens.refresh_token),
+        scopes: tokens.scope ? tokens.scope.split(' ') : [],
+        issuedAt: parseInt(tokens.issued_at) || now,
+        expiresAt: now + 7200_000,
+        status: 'connected',
+        createdAt: now,
+        updatedAt: now,
+      };
+      remove<SalesforceConnectionRecord>(COLLECTION, r => r.localUserId === localUserId);
+      saveConnection(record);
+      accessTokenCache.set(localUserId, {
+        accessToken: tokens.access_token,
+        instanceUrl: tokens.instance_url,
+        expiresAt: record.expiresAt!,
+      });
+      logger.auditLog('salesforce_connected', localUserId, { orgId: identity.orgId, instanceUrl: tokens.instance_url });
+      return record;
+    },
+  };
+}
+
 // Cleanup expired states
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of pendingStates.entries()) {
     if (val.expiresAt < now) pendingStates.delete(key);
+  }
+  for (const [key, val] of pendingMcpAuth.entries()) {
+    if (val.expiresAt < now) pendingMcpAuth.delete(key);
   }
 }, 60_000);
 
