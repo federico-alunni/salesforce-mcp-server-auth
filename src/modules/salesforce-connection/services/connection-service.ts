@@ -41,8 +41,8 @@ const accessTokenCache = new Map<string, { accessToken: string; instanceUrl: str
 // ---------------------------------------------------------------------------
 
 function generatePkce(): { codeVerifier: string; codeChallenge: string } {
-  // Use hex encoding: only [0-9a-f] — no ~ or other special characters
-  const codeVerifier = randomBytes(32).toString('hex');
+  // RFC 7636: base64url of raw random bytes → alphabet [A-Za-z0-9\-_], no ~ or .
+  const codeVerifier = randomBytes(32).toString('base64url');
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url');
   return { codeVerifier, codeChallenge };
 }
