@@ -3,7 +3,7 @@
 // Issues and validates local JWTs for MCP client sessions.
 // ============================================================================
 
-import { createHmac, randomUUID, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { mcpAuth } from '../../../shared/config/index.js';
 import type { ITokenService, LocalPrincipal, McpTokenRecord } from '../../../types/index.js';
 import { logger } from '../../../shared/logger.js';
@@ -63,6 +63,25 @@ function getSecret(): string {
 }
 
 // ---------------------------------------------------------------------------
+// Refresh token store — opaque tokens with rotating strategy
+// ---------------------------------------------------------------------------
+
+interface RefreshTokenRecord {
+  userId: string;
+  scopes: string[];
+  expiresAt: number;
+}
+
+const refreshTokens = new Map<string, RefreshTokenRecord>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of refreshTokens.entries()) {
+    if (record.expiresAt < now) refreshTokens.delete(key);
+  }
+}, 300_000);
+
+// ---------------------------------------------------------------------------
 // Public API — implements ITokenService
 // ---------------------------------------------------------------------------
 
@@ -93,5 +112,25 @@ export const tokenService: ITokenService = {
       sessionId: payload.jti as string,
       scopes: typeof payload.scope === 'string' ? (payload.scope as string).split(' ') : [],
     };
+  },
+
+  async generateRefreshToken(userId: string, scopes: string[]): Promise<string> {
+    const token = randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + mcpAuth.refreshTokenTTL * 1000;
+    refreshTokens.set(token, { userId, scopes, expiresAt });
+    logger.debug(`Issued refresh token for user=${userId}`);
+    return token;
+  },
+
+  async validateRefreshToken(token: string): Promise<{ userId: string; scopes: string[] } | null> {
+    const record = refreshTokens.get(token);
+    if (!record) return null;
+    if (record.expiresAt < Date.now()) {
+      refreshTokens.delete(token);
+      return null;
+    }
+    // Rotate: invalidate old token on use
+    refreshTokens.delete(token);
+    return { userId: record.userId, scopes: record.scopes };
   },
 };

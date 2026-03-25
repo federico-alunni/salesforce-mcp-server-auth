@@ -47,7 +47,7 @@ export function createLocalOAuthRoutes(): Router {
       token_endpoint: `${serverUrl}/token`,
       registration_endpoint: `${serverUrl}/register`,
       response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
+      grant_types_supported: ['authorization_code', 'refresh_token'],
       code_challenge_methods_supported: ['S256', 'plain'],
       scopes_supported: mcpAuth.oauthScopes.split(' '),
       token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
@@ -142,7 +142,31 @@ export function createLocalOAuthRoutes(): Router {
     res.set('Access-Control-Allow-Origin', '*');
     res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-    const { grant_type, code, client_id, redirect_uri, code_verifier } = req.body;
+    const { grant_type, code, client_id, redirect_uri, code_verifier, refresh_token } = req.body;
+
+    if (grant_type === 'refresh_token') {
+      if (!refresh_token) {
+        res.status(400).json({ error: 'invalid_request', error_description: 'refresh_token is required' });
+        return;
+      }
+      const session = await tokenService.validateRefreshToken(refresh_token);
+      if (!session) {
+        res.status(400).json({ error: 'invalid_grant', error_description: 'Invalid or expired refresh token' });
+        return;
+      }
+      const { mcpAuth: cfg } = await import('../../../shared/config/index.js');
+      const accessToken = await tokenService.generateAccessToken(session.userId, session.scopes);
+      const newRefreshToken = await tokenService.generateRefreshToken(session.userId, session.scopes);
+      logger.auditLog('mcp_token_refreshed', session.userId, {});
+      res.json({
+        access_token: accessToken,
+        token_type: 'Bearer',
+        expires_in: cfg.accessTokenTTL,
+        refresh_token: newRefreshToken,
+        scope: session.scopes.join(' '),
+      });
+      return;
+    }
 
     if (grant_type !== 'authorization_code') {
       res.status(400).json({ error: 'unsupported_grant_type' });
@@ -160,13 +184,16 @@ export function createLocalOAuthRoutes(): Router {
       return;
     }
 
+    const { mcpAuth: cfg } = await import('../../../shared/config/index.js');
     const accessToken = await tokenService.generateAccessToken(record.userId, record.scopes);
+    const newRefreshToken = await tokenService.generateRefreshToken(record.userId, record.scopes);
     logger.auditLog('mcp_token_issued', record.userId, { clientId: client_id });
 
     res.json({
       access_token: accessToken,
       token_type: 'Bearer',
-      expires_in: (await import('../../../shared/config/index.js')).mcpAuth.accessTokenTTL,
+      expires_in: cfg.accessTokenTTL,
+      refresh_token: newRefreshToken,
       scope: record.scopes.join(' '),
     });
   };

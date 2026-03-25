@@ -85,6 +85,8 @@ export interface ISalesforceConnectionService {
 export interface ITokenService {
   generateAccessToken(userId: string, scopes: string[]): Promise<string>;
   validateAccessToken(token: string): Promise<LocalPrincipal | null>;
+  generateRefreshToken(userId: string, scopes: string[]): Promise<string>;
+  validateRefreshToken(token: string): Promise<{ userId: string; scopes: string[] } | null>;
 }
 
 /** Module C uses this to resolve the principal from any MCP request. */

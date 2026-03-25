@@ -37,6 +37,7 @@ export const mcpAuth = {
   jwtIssuer: env('MCP_JWT_ISSUER', serverUrl),
   jwtAudience: env('MCP_JWT_AUDIENCE', serverUrl),
   accessTokenTTL: envInt('MCP_ACCESS_TOKEN_TTL', 3600),          // seconds
+  refreshTokenTTL: envInt('MCP_REFRESH_TOKEN_TTL', 2592000),      // seconds (30 days)
   authCodeTTL: envInt('MCP_AUTH_CODE_TTL', 300),                  // seconds
   allowedClientIds: env('MCP_ALLOWED_CLIENT_IDS', '*').split(',').map(s => s.trim()),
   oauthScopes: env('MCP_OAUTH_SCOPES', 'mcp:tools mcp:read'),
