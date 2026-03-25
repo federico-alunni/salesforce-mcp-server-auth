@@ -10,6 +10,7 @@
 // ============================================================================
 
 import { Router, type Request, type Response } from 'express';
+import { randomBytes } from 'crypto';
 import { serverUrl, mcpAuth } from '../../../shared/config/index.js';
 import { logger } from '../../../shared/logger.js';
 import { redeemAuthorizationCode } from '../services/auth-code-service.js';
@@ -49,7 +50,7 @@ export function createLocalOAuthRoutes(): Router {
       grant_types_supported: ['authorization_code'],
       code_challenge_methods_supported: ['S256', 'plain'],
       scopes_supported: mcpAuth.oauthScopes.split(' '),
-      token_endpoint_auth_methods_supported: ['none'],
+      token_endpoint_auth_methods_supported: ['client_secret_post', 'client_secret_basic', 'none'],
     });
   };
 
@@ -72,15 +73,24 @@ export function createLocalOAuthRoutes(): Router {
     const clientId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     logger.info(`Dynamic client registered: ${clientId} (${client_name ?? 'unnamed'})`);
 
-    res.status(201).json({
+    const resolvedAuthMethod = token_endpoint_auth_method ?? 'client_secret_post';
+    const clientSecret = resolvedAuthMethod !== 'none' ? randomBytes(32).toString('hex') : undefined;
+
+    const registrationResponse: Record<string, unknown> = {
       client_id: clientId,
       client_id_issued_at: Math.floor(Date.now() / 1000),
       redirect_uris,
       grant_types: grant_types ?? ['authorization_code'],
       response_types: response_types ?? ['code'],
-      token_endpoint_auth_method: token_endpoint_auth_method ?? 'none',
+      token_endpoint_auth_method: resolvedAuthMethod,
       client_name: client_name ?? clientId,
-    });
+    };
+    if (clientSecret) {
+      registrationResponse.client_secret = clientSecret;
+      registrationResponse.client_secret_expires_at = 0; // never expires
+    }
+
+    res.status(201).json(registrationResponse);
   });
 
   // -----------------------------------------------------------------------
